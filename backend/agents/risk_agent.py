@@ -12,7 +12,12 @@ from backend.schemas.risk import (
     RiskFactorInputs,
     RiskFinding,
 )
-from backend.services.llm_service import LLMService, LLMUnavailableError
+from backend.services.llm_service import (
+    LLMInvocationError,
+    LLMService,
+    LLMUnavailableError,
+    classify_llm_exception,
+)
 from backend.services.scoring_service import calculate_clause_risk_score
 
 
@@ -45,6 +50,11 @@ class RiskAgent:
     def __init__(self, llm_service: LLMService | None = None, batch_size: int = 6) -> None:
         self.llm_service = llm_service or LLMService()
         self.batch_size = batch_size
+        self.last_run_meta: dict[str, object] = {
+            "gemini_status": "ok" if self.llm_service.is_available else "missing_key",
+            "fallback_used": False,
+            "fallback_reason": None,
+        }
 
     def assess_clauses(
         self,
@@ -53,36 +63,77 @@ class RiskAgent:
     ) -> tuple[list[RiskFinding], str]:
         clause_list = list(clauses)
         if not clause_list:
-            return [], "gemini" if self.llm_service.is_available else "deterministic_fallback"
+            available = self.llm_service.is_available
+            self.last_run_meta = {
+                "gemini_status": "ok" if available else "missing_key",
+                "fallback_used": not available,
+                "fallback_reason": None if available else "Gemini API key is not configured.",
+            }
+            return [], "gemini" if available else "deterministic_fallback"
 
         class_map = {c.clause_id: c for c in (classifications or [])}
 
         if not self.llm_service.is_available:
+            reason = "Gemini API key is not configured."
+            self.last_run_meta = {
+                "gemini_status": "missing_key",
+                "fallback_used": True,
+                "fallback_reason": reason,
+            }
             return [
-                self._assess_deterministic(clause, class_map.get(clause.clause_id), "deterministic_fallback")
+                self._assess_deterministic(
+                    clause,
+                    class_map.get(clause.clause_id),
+                    "ai_unavailable",
+                    gemini_status="missing_key",
+                    fallback_reason=reason,
+                )
                 for clause in clause_list
             ], "deterministic_fallback"
 
         findings: list[RiskFinding] = []
         used_gemini = False
         used_fallback = False
+        last_status = "ok"
+        reasons: list[str] = []
 
         for start in range(0, len(clause_list), self.batch_size):
             batch = clause_list[start : start + self.batch_size]
             try:
-                batch_findings = self._assess_batch_with_gemini(batch, class_map)
+                batch_findings, batch_partial = self._assess_batch_with_gemini(batch, class_map)
                 findings.extend(batch_findings)
                 used_gemini = True
-            except LLMUnavailableError:
+                if batch_partial:
+                    used_fallback = True
+                    last_status = "malformed_output"
+                    reasons.append("Gemini omitted one or more clause IDs from structured risk output.")
+            except (LLMUnavailableError, LLMInvocationError) as exc:
+                last_status, reason = exc.status_label, exc.reason
+                reasons.append(reason)
+                src = "ai_unavailable" if last_status in {"missing_key", "dependency_missing"} else "deterministic_fallback"
                 findings.extend(
-                    self._assess_deterministic(c, class_map.get(c.clause_id), "ai_unavailable")
+                    self._assess_deterministic(
+                        c,
+                        class_map.get(c.clause_id),
+                        src,
+                        gemini_status=last_status,
+                        fallback_reason=reason,
+                    )
                     for c in batch
                 )
                 used_fallback = True
             except Exception as exc:
-                logger.warning("Gemini risk assessment batch failed (%s); using fallback", type(exc).__name__)
+                last_status, reason = classify_llm_exception(exc)
+                reasons.append(reason)
+                logger.warning("Gemini risk assessment batch failed (%s); using fallback", last_status)
                 findings.extend(
-                    self._assess_deterministic(c, class_map.get(c.clause_id), "deterministic_fallback")
+                    self._assess_deterministic(
+                        c,
+                        class_map.get(c.clause_id),
+                        "deterministic_fallback",
+                        gemini_status=last_status,
+                        fallback_reason=reason,
+                    )
                     for c in batch
                 )
                 used_fallback = True
@@ -90,28 +141,39 @@ class RiskAgent:
         mode = "gemini" if (used_gemini and not used_fallback) else (
             "hybrid_fallback" if used_gemini else "deterministic_fallback"
         )
+        self.last_run_meta = {
+            "gemini_status": last_status if used_fallback else "ok",
+            "fallback_used": used_fallback,
+            "fallback_reason": "; ".join(dict.fromkeys(reasons)) if reasons else None,
+        }
         return findings, mode
 
     def _assess_batch_with_gemini(
         self,
         batch: list[ExtractedClause],
         class_map: dict[str, ClauseClassification],
-    ) -> list[RiskFinding]:
+    ) -> tuple[list[RiskFinding], bool]:
         blocks = []
         for clause in batch:
             cls = class_map.get(clause.clause_id)
             cat = cls.category if cls else clause.category
             fenced = wrap_untrusted_contract_text(clause.original_text)
+            loc = (
+                f"Page: {clause.page_number}"
+                if clause.page_number is not None
+                else f"DOCX Paragraph: {clause.paragraph_index or 1}"
+            )
             blocks.append(
                 f"Clause ID: {clause.clause_id}\n"
                 f"Title: {clause.title}\n"
                 f"Category: {cat}\n"
-                f"Page: {clause.page_number}\n"
+                f"{loc}\n"
                 f"{fenced}"
             )
 
         user_prompt = (
-            "Assess the contractual risks for each clause below and return structured factor scores.\n\n"
+            "Assess the contractual risks for each clause below and return structured factor scores. "
+            "Use finding_type='no_notable_risk' when a clause contains routine provisions with no identifiable risk indicator.\n\n"
             + "\n\n---\n\n".join(blocks)
         )
         parsed = self.llm_service.invoke_structured(
@@ -122,17 +184,29 @@ class RiskAgent:
 
         by_id = {f.clause_id: f for f in parsed.findings}
         results: list[RiskFinding] = []
+        partial_fallback = False
         for clause in batch:
             item = by_id.get(clause.clause_id)
             if item is None:
+                partial_fallback = True
                 results.append(
                     self._assess_deterministic(
-                        clause, class_map.get(clause.clause_id), "deterministic_fallback"
+                        clause,
+                        class_map.get(clause.clause_id),
+                        "deterministic_fallback",
+                        gemini_status="malformed_output",
+                        fallback_reason="Gemini omitted clause ID from risk batch output.",
                     )
                 )
                 continue
 
-            score, level, breakdown = calculate_clause_risk_score(item.factors)
+            if item.finding_type == "no_notable_risk":
+                score, level, breakdown = None, "no_notable_risk", {}
+            elif item.finding_type in ("uncertain_finding", "missing_information"):
+                score, level, breakdown = None, "uncertain", {}
+            else:
+                score, level, breakdown = calculate_clause_risk_score(item.factors)
+
             results.append(
                 RiskFinding(
                     clause_id=clause.clause_id,
@@ -144,18 +218,25 @@ class RiskAgent:
                     potential_impact=item.potential_impact.strip(),
                     suggested_action=item.suggested_action.strip(),
                     page_number=clause.page_number,
+                    location_type=clause.location_type,
+                    paragraph_index=clause.paragraph_index,
+                    section_title=clause.section_title,
                     finding_type=item.finding_type,
                     analysis_source="gemini",
+                    gemini_status="ok",
+                    fallback_reason=None,
                     scoring_breakdown=breakdown,
                 )
             )
-        return results
+        return results, partial_fallback
 
     @staticmethod
     def _assess_deterministic(
         clause: ExtractedClause,
         classification: ClauseClassification | None,
         source: str,
+        gemini_status: str | None = None,
+        fallback_reason: str | None = None,
     ) -> RiskFinding:
         text_l = clause.original_text.lower()
         category = classification.category if classification else clause.category
@@ -167,11 +248,12 @@ class RiskAgent:
         reasons: list[str] = []
         impacts: list[str] = []
         actions: list[str] = []
-        risk_title = f"Standard {category} terms"
-        finding_type: FindingType = "detected_risk"
+        risk_title = f"No notable risk pattern detected ({category})"
+        finding_type: FindingType = "no_notable_risk"
 
         # High/Critical financial & liability exposure patterns
         if re.search(r"(one hundred dollars|\$100|\$500|nominal)", text_l) and "liability" in text_l:
+            finding_type = "detected_risk"
             severity = 85.0
             unfavorable = 85.0
             missing = 75.0
@@ -182,6 +264,7 @@ class RiskAgent:
             actions.append("Negotiate a mutual liability cap tied to fees paid (e.g., 12 months of fees) and carve-outs.")
 
         elif "in no event" in text_l and ("consequential" in text_l or "indirect" in text_l):
+            finding_type = "detected_risk"
             severity = max(severity, 65.0)
             unfavorable = max(unfavorable, 65.0)
             missing = max(missing, 55.0)
@@ -191,6 +274,7 @@ class RiskAgent:
             actions.append("Confirm whether exclusions are mutual and include standard carve-outs (confidentiality, indemnity).")
 
         if "indemnify" in text_l and ("without any reciprocal" in text_l or ("client" in text_l and "provider" in text_l and "mutual" not in text_l)):
+            finding_type = "detected_risk"
             severity = max(severity, 78.0)
             unfavorable = max(unfavorable, 82.0)
             missing = max(missing, 75.0)
@@ -200,6 +284,7 @@ class RiskAgent:
             actions.append("Request mutual indemnification for IP infringement, breach, and gross negligence.")
 
         if ("non-compete" in text_l or "competing" in text_l) and ("three (3) years" in text_l or "worldwide" in text_l or "any jurisdiction" in text_l):
+            finding_type = "detected_risk"
             severity = max(severity, 82.0)
             unfavorable = max(unfavorable, 85.0)
             missing = max(missing, 65.0)
@@ -210,6 +295,7 @@ class RiskAgent:
             actions.append("Narrow scope, remove broad non-compete in standard NDAs, or limit duration/geography.")
 
         if "automatically renew" in text_l or "auto-renew" in text_l:
+            finding_type = "detected_risk"
             severity = max(severity, 62.0)
             unfavorable = max(unfavorable, 68.0)
             missing = max(missing, 60.0)
@@ -221,16 +307,18 @@ class RiskAgent:
             actions.append("Change to opt-in renewal or shorten non-renewal notice to 30 days with reminder notice.")
 
         if "without refund" in text_l or "for convenience" in text_l:
+            finding_type = "detected_risk"
             severity = max(severity, 68.0)
             unfavorable = max(unfavorable, 75.0)
             missing = max(missing, 70.0)
-            if "Standard" in risk_title:
+            if "No notable" in risk_title:
                 risk_title = "Unbalanced termination without refund"
             reasons.append("Permits termination for convenience without refunding unused prepaid fees.")
             impacts.append("Creates risk of losing prepaid fees if the counterparty terminates early.")
             actions.append("Require pro-rata refund of prepaid, unused fees upon termination for convenience.")
 
         if "as is" in text_l and "without warranty" in text_l:
+            finding_type = "detected_risk"
             severity = max(severity, 65.0)
             unfavorable = max(unfavorable, 72.0)
             missing = max(missing, 75.0)
@@ -240,6 +328,7 @@ class RiskAgent:
             actions.append("Add basic performance, conformity, and non-infringement warranties.")
 
         if ("sole discretion" in text_l or "at any time" in text_l) and ("rate" in text_l or "7 days" in text_l or "seven (7) days" in text_l):
+            finding_type = "detected_risk"
             severity = max(severity, 64.0)
             unfavorable = max(unfavorable, 75.0)
             missing = max(missing, 65.0)
@@ -249,13 +338,11 @@ class RiskAgent:
             impacts.append("Exposes your budget to unexpected cost increases mid-contract.")
             actions.append("Lock pricing for the initial term and cap renewal increases.")
 
-        # Ambiguity indicators
+        # Ambiguity / uncertainty indicators (kept separate from detected risk scoring)
         vague_terms = [t for t in ("reasonable", "timely", "promptly", "material", "adequate") if t in text_l]
         if vague_terms and not reasons:
-            ambiguity = max(ambiguity, 45.0)
-            missing = max(missing, 30.0)
             finding_type = "uncertain_finding"
-            risk_title = f"General {category} clause with discretionary language"
+            risk_title = f"Discretionary / qualitative language in {category}"
             reasons.append(
                 f"Uses qualitative terms ({', '.join(vague_terms[:3])}) without fixed numeric thresholds."
             )
@@ -263,38 +350,50 @@ class RiskAgent:
             actions.append("Consider defining measurable SLAs, timelines, or objective criteria.")
 
         if classification and classification.uncertain and not reasons:
-            ambiguity = max(ambiguity, 55.0)
             finding_type = "uncertain_finding"
             risk_title = f"Uncertain classification ({category}) — manual review recommended"
             reasons.append("Clause category confidence is low; deterministic screening could not fully classify obligations.")
             impacts.append("Important obligations or exceptions may require closer human reading.")
-            actions.append("Review this section manually or run Gemini analysis with an API key configured.")
+            actions.append("Review this section manually or run Gemini analysis when available.")
 
-        if not reasons:
-            reasons.append("No high-risk red-flag patterns were detected by deterministic keyword screening.")
-            impacts.append("Appears broadly aligned with routine commercial terms, subject to context.")
-            actions.append("Verify dates, party names, and commercial numbers match your deal terms.")
+        if finding_type == "detected_risk":
+            factors = RiskFactorInputs(
+                severity=severity,
+                unfavorable_wording=unfavorable,
+                missing_protections=missing,
+                ambiguity=ambiguity,
+            )
+            score, level, breakdown = calculate_clause_risk_score(factors)
+        elif finding_type == "uncertain_finding":
+            score, level, breakdown = None, "uncertain", {}
+        else:
+            finding_type = "no_notable_risk"
+            score, level, breakdown = None, "no_notable_risk", {}
+            reasons.append(
+                "No notable high-risk red-flag patterns were detected by deterministic keyword screening. "
+                "Absence of flagged patterns does NOT confirm legal safety or completeness."
+            )
+            impacts.append("Routine commercial context may still contain nuanced business risks not matched by rules.")
+            actions.append("Verify dates, party names, and commercial numbers against your deal terms.")
 
-        factors = RiskFactorInputs(
-            severity=severity,
-            unfavorable_wording=unfavorable,
-            missing_protections=missing,
-            ambiguity=ambiguity,
-        )
-        score, level, breakdown = calculate_clause_risk_score(factors)
-
+        prefix_reason = fallback_reason or "Gemini AI unavailable"
         return RiskFinding(
             clause_id=clause.clause_id,
             risk_level=level,
             risk_score=score,
             risk_title=risk_title,
             original_clause=clause.original_text,
-            explanation=f"[Deterministic screening — Gemini unavailable] {' '.join(reasons)}",
+            explanation=f"[Deterministic screening — {prefix_reason}] {' '.join(reasons)}",
             potential_impact=" ".join(impacts),
             suggested_action=" ".join(actions),
             page_number=clause.page_number,
+            location_type=clause.location_type,
+            paragraph_index=clause.paragraph_index,
+            section_title=clause.section_title,
             finding_type=finding_type,
             analysis_source=source,
+            gemini_status=gemini_status,
+            fallback_reason=fallback_reason,
             scoring_breakdown=breakdown,
         )
 

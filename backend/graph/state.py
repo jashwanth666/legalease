@@ -27,6 +27,13 @@ class LegalEaseState(TypedDict, total=False):
     overall_risk_level: str
     risk_overview: dict[str, Any]
     analysis_mode: str
+    gemini_status: str
+    fallback_used: bool
+    fallback_reason: str | None
+    embedding_backend: str
+    llm_telemetry: Annotated[list[dict[str, Any]], operator.add]
+    db_saved: bool
+    pdf_generated: bool
     report_path: str
     processing_errors: Annotated[list[str], operator.add]
     runtime_config: dict[str, Any]

@@ -1,7 +1,9 @@
 """End-to-end API, LangGraph workflow, SQLite persistence, and PDF report tests."""
 
+import io
 from pathlib import Path
 
+import docx
 from fastapi.testclient import TestClient
 import pymupdf as fitz
 import pytest
@@ -179,4 +181,140 @@ def test_full_end_to_end_langgraph_and_pdf_report_pipeline(api_client):
     del_resp = client.delete(f"/api/documents/{doc_id}")
     assert del_resp.status_code == 200
     assert not (test_settings.reports_dir / f"LegalEase_Report_{doc_id}.pdf").exists()
+
+
+def test_analysis_failure_resets_processing_status_and_allows_retry(api_client, monkeypatch):
+    client, _ = api_client
+    sample_pdf = (
+        Path(__file__).resolve().parent.parent
+        / "data"
+        / "sample_contracts"
+        / "sample_nda.pdf"
+    )
+    with sample_pdf.open("rb") as f:
+        upload_resp = client.post(
+            "/api/upload",
+            files={"file": ("sample_nda.pdf", f, "application/pdf")},
+        )
+    assert upload_resp.status_code == 201
+    doc_id = upload_resp.json()["document_id"]
+
+    # Simulate unexpected crash inside run_contract_analysis
+    def _boom(**kwargs):
+        raise RuntimeError("Simulated LangGraph crash")
+
+    monkeypatch.setattr("backend.api.analysis.run_contract_analysis", _boom)
+    fail_resp = client.post(f"/api/analyze/{doc_id}")
+    assert fail_resp.status_code == 500
+
+    # Must NEVER remain stuck in 'processing'
+    doc_state = client.get(f"/api/documents/{doc_id}").json()["document"]
+    assert doc_state["processing_status"] == "failed"
+    assert doc_state["last_error"] is not None
+
+    # Report download must be blocked until analysis succeeds
+    assert client.get(f"/api/report/{doc_id}").status_code == 409
+
+    # Restore real workflow and retry
+    from backend.graph.workflow import run_contract_analysis as real_run
+
+    monkeypatch.setattr("backend.api.analysis.run_contract_analysis", real_run)
+    retry_resp = client.post(f"/api/analyze/{doc_id}")
+    assert retry_resp.status_code == 200
+    assert retry_resp.json()["processing_status"] == "analyzed"
+    assert client.get(f"/api/report/{doc_id}").status_code == 200
+
+
+def test_pdf_generation_skipped_on_db_save_failure_and_partially_analyzed_on_pdf_failure(
+    api_client, monkeypatch
+):
+    client, test_settings = api_client
+    sample_pdf = (
+        Path(__file__).resolve().parent.parent
+        / "data"
+        / "sample_contracts"
+        / "sample_nda.pdf"
+    )
+    with sample_pdf.open("rb") as f:
+        doc_id = client.post(
+            "/api/upload",
+            files={"file": ("sample_nda.pdf", f, "application/pdf")},
+        ).json()["document_id"]
+
+    # 1. Fail DB save -> generate_pdf must NOT run
+    pdf_called = []
+    from backend.graph import nodes as graph_nodes
+
+    orig_save = graph_nodes.save_results_node
+    orig_pdf = graph_nodes.generate_pdf_node
+
+    def _fail_save(state):
+        return {"db_saved": False, "processing_errors": ["Simulated DB failure"]}
+
+    def _spy_pdf(state):
+        pdf_called.append(True)
+        return orig_pdf(state)
+
+    monkeypatch.setattr("backend.graph.workflow.save_results_node", _fail_save)
+    monkeypatch.setattr("backend.graph.workflow.generate_pdf_node", _spy_pdf)
+
+    resp1 = client.post(f"/api/analyze/{doc_id}")
+    assert resp1.status_code == 422
+    assert pdf_called == []
+    assert not (test_settings.reports_dir / f"LegalEase_Report_{doc_id}.pdf").exists()
+    assert client.get(f"/api/documents/{doc_id}").json()["document"]["processing_status"] == "failed"
+
+    # 2. Restore DB save, fail PDF generation -> status becomes 'partially_analyzed', NOT 'analyzed'
+    monkeypatch.setattr("backend.graph.workflow.save_results_node", orig_save)
+
+    def _fail_pdf(state):
+        return {"pdf_generated": False, "processing_errors": ["Simulated PDF error"]}
+
+    monkeypatch.setattr("backend.graph.workflow.generate_pdf_node", _fail_pdf)
+    resp2 = client.post(f"/api/analyze/{doc_id}")
+    assert resp2.status_code == 422
+    assert client.get(f"/api/documents/{doc_id}").json()["document"]["processing_status"] == "partially_analyzed"
+    assert client.get(f"/api/report/{doc_id}").status_code == 409
+
+
+def test_docx_end_to_end_with_unicode_and_paragraph_locations(api_client):
+    client, _ = api_client
+    doc = docx.Document()
+    doc.add_heading("1. Confidentiality — Mutual Protection", level=1)
+    doc.add_paragraph(
+        "Receiving Party shall hold all confidential data in confidence — valued up to ₹500,000 or €5,000."
+    )
+    doc.add_heading("2. Limitation of Liability", level=1)
+    doc.add_paragraph(
+        "IN NO EVENT SHALL PROVIDER BE LIABLE FOR INDIRECT DAMAGES AND TOTAL LIABILITY SHALL NOT EXCEED ONE HUNDRED DOLLARS ($100)."
+    )
+    buf = io.BytesIO()
+    doc.save(buf)
+
+    upload = client.post(
+        "/api/upload",
+        files={
+            "file": (
+                "unicode_service.docx",
+                buf.getvalue(),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+    assert upload.status_code == 201
+    doc_id = upload.json()["document_id"]
+    assert upload.json()["page_count"] == 0
+
+    analyze = client.post(f"/api/analyze/{doc_id}")
+    assert analyze.status_code == 200
+    payload = analyze.json()
+    assert payload["processing_status"] == "analyzed"
+    assert payload["gemini_status"] == "missing_key"
+    assert payload["fallback_used"] is True
+    assert all(rf["location_type"] == "docx_paragraph" for rf in payload["risk_findings"])
+    assert all(rf["page_number"] is None for rf in payload["risk_findings"])
+
+    pdf_resp = client.get(f"/api/report/{doc_id}")
+    assert pdf_resp.status_code == 200
+    assert pdf_resp.content.startswith(b"%PDF-")
 

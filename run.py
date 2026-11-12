@@ -5,9 +5,28 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 
 
 ROOT_DIR = Path(__file__).resolve().parent
+
+
+def _wait_for_backend_health(proc: subprocess.Popen, api_host: str, api_port: int, timeout_s: float = 25.0) -> bool:
+    """Poll FastAPI /health endpoint until ready or fail cleanly if the backend exits."""
+    url = f"http://{api_host}:{api_port}/health"
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return False
+        try:
+            with urllib.request.urlopen(url, timeout=1.5) as resp:
+                if resp.status == 200:
+                    return True
+        except (urllib.error.URLError, TimeoutError, OSError):
+            pass
+        time.sleep(0.5)
+    return False
 
 
 def main() -> int:
@@ -33,8 +52,14 @@ def main() -> int:
                 str(args.api_port),
             ]
             print(f"Starting FastAPI backend on http://{args.api_host}:{args.api_port} ...")
-            procs.append(subprocess.Popen(backend_cmd, cwd=str(ROOT_DIR)))
-            time.sleep(1.5)
+            backend_proc = subprocess.Popen(backend_cmd, cwd=str(ROOT_DIR))
+            procs.append(backend_proc)
+            if not args.backend_only:
+                print("Waiting for FastAPI /health check...")
+                if not _wait_for_backend_health(backend_proc, args.api_host, args.api_port):
+                    print("Backend failed health check before Streamlit startup.")
+                    return 1
+                print("Backend is healthy.")
 
         if not args.backend_only:
             frontend_cmd = [

@@ -24,14 +24,25 @@ CLAUSE_CATEGORIES: tuple[str, ...] = (
 ALL_CLAUSE_CATEGORIES: tuple[str, ...] = CLAUSE_CATEGORIES + ("Other",)
 
 
+LocationType = Literal["pdf_page", "docx_paragraph"]
+SegmentationConfidence = Literal["high", "medium", "low"]
+
+
 class ExtractedClause(BaseModel):
-    """Represents a segmented clause with preserved original text and page reference."""
+    """Represents a segmented clause with preserved text and accurate location reference."""
 
     clause_id: str
     title: str
     category: str
     original_text: str
-    page_number: int = Field(..., ge=1)
+    page_number: int | None = Field(default=None, ge=1)
+    end_page_number: int | None = Field(default=None, ge=1)
+    location_type: LocationType = "pdf_page"
+    paragraph_index: int | None = Field(default=None, ge=1)
+    section_title: str | None = None
+    segmentation_confidence: SegmentationConfidence = "high"
+    segmentation_uncertain: bool = False
+    segmentation_note: str | None = None
 
 
 class ClauseClassification(BaseModel):

@@ -16,7 +16,9 @@ import pymupdf as fitz
 
 
 HEADING_PATTERN = re.compile(
-    r"^(?:(?:ARTICLE|SECTION|CLAUSE)\s+[IVXLC0-9]+|\d+(?:\.\d+)*\.?\s+[A-Z]).{1,90}$"
+    r"^(?:(?:ARTICLE|SECTION|CLAUSE)\s+[IVXLC0-9]+(?:\.\d+)*|"
+    r"[IVXLC]+(?:[.)]|\s+[-–—:])\s+[A-Za-z]|"
+    r"\d+(?:\.\d+)*\.?\s+[A-Za-z]).{1,95}$"
 )
 
 
@@ -112,6 +114,9 @@ def _extract_pdf(file_path: Path) -> tuple[list[dict[str, Any]], bool, str | Non
             pages.append(
                 {
                     "page_number": page_idx,
+                    "location_type": "pdf_page",
+                    "paragraph_index": None,
+                    "section_title": headings[0] if headings else None,
                     "text": page_text,
                     "headings": headings,
                 }
@@ -145,36 +150,41 @@ def _iter_docx_block_items(parent: DocxDocument):
             yield Table(child, parent)
 
 
-def _paragraph_has_page_break(paragraph: Paragraph) -> bool:
-    xml_str = paragraph._p.xml
-    return 'w:type="page"' in xml_str or "lastRenderedPageBreak" in xml_str
-
-
 def _extract_docx(file_path: Path) -> tuple[list[dict[str, Any]], bool, str | None]:
+    """Extract ordered DOCX paragraphs and tables using paragraph positions (no invented page numbers)."""
     document = docx.Document(str(file_path))
-    pages_content: list[list[str]] = [[]]
-    pages_headings: list[list[str]] = [[]]
+    blocks: list[dict[str, Any]] = []
+    headings: list[str] = []
     total_alnum = 0
+    paragraph_counter = 0
+    current_section: str | None = None
 
     for item in _iter_docx_block_items(document):
         if isinstance(item, Paragraph):
-            if _paragraph_has_page_break(item) and pages_content[-1]:
-                pages_content.append([])
-                pages_headings.append([])
-
             text = re.sub(r"\s+", " ", item.text or "").strip()
             if not text:
                 continue
 
+            paragraph_counter += 1
             style_name = (item.style.name if item.style else "") or ""
             is_heading_style = style_name.lower().startswith("heading") or style_name.lower() == "title"
             is_bold = bool(item.runs) and all(
                 bool(r.bold) for r in item.runs if r.text.strip()
             )
-            if is_heading_style or _is_probable_heading(text, is_bold=is_bold):
-                pages_headings[-1].append(text)
+            is_heading = is_heading_style or _is_probable_heading(text, is_bold=is_bold)
+            if is_heading:
+                headings.append(text)
+                current_section = text
 
-            pages_content[-1].append(text)
+            blocks.append(
+                {
+                    "paragraph_index": paragraph_counter,
+                    "location_type": "docx_paragraph",
+                    "section_title": current_section,
+                    "text": text,
+                    "is_heading": is_heading,
+                }
+            )
             total_alnum += sum(ch.isalnum() for ch in text)
 
         elif isinstance(item, Table):
@@ -189,19 +199,29 @@ def _extract_docx(file_path: Path) -> tuple[list[dict[str, Any]], bool, str | No
                     table_rows.append(row_line)
                     total_alnum += sum(ch.isalnum() for ch in row_line)
             if table_rows:
-                pages_content[-1].append("\n".join(table_rows))
+                paragraph_counter += 1
+                blocks.append(
+                    {
+                        "paragraph_index": paragraph_counter,
+                        "location_type": "docx_paragraph",
+                        "section_title": current_section,
+                        "text": "\n".join(table_rows),
+                        "is_heading": False,
+                    }
+                )
 
-    pages: list[dict[str, Any]] = []
-    for idx, (blocks, heads) in enumerate(zip(pages_content, pages_headings), start=1):
-        text = "\n\n".join(blocks).strip()
-        if text or idx == 1:
-            pages.append(
-                {
-                    "page_number": idx,
-                    "text": text,
-                    "headings": heads,
-                }
-            )
+    combined_text = "\n\n".join(b["text"] for b in blocks).strip()
+    pages: list[dict[str, Any]] = [
+        {
+            "page_number": None,
+            "location_type": "docx_paragraph",
+            "paragraph_index": blocks[0]["paragraph_index"] if blocks else 1,
+            "section_title": blocks[0]["section_title"] if blocks else None,
+            "text": combined_text,
+            "headings": headings,
+            "blocks": blocks,
+        }
+    ]
 
     ocr_required = total_alnum < 10
     warning = (
@@ -218,27 +238,36 @@ def extract_document_text(
     original_filename: str,
     file_type: str | None = None,
 ) -> dict[str, Any]:
-    """Extract structured page-preserved text from a PDF or DOCX file."""
+    """Extract structured location-referenced text from a PDF or DOCX file."""
     resolved_type = (file_type or file_path.suffix.lstrip(".")).lower()
 
     if resolved_type == "pdf":
         pages, ocr_required, warning = _extract_pdf(file_path)
+        page_count = len(pages)
+        full_text = "\n\n".join(
+            f"[Page {page['page_number']}]\n{page['text']}"
+            for page in pages
+            if page["text"]
+        ).strip()
     elif resolved_type == "docx":
         pages, ocr_required, warning = _extract_docx(file_path)
+        # DOCX files do not have fixed page layout; keep page_count=0 rather than fabricating pages.
+        page_count = 0
+        blocks = pages[0].get("blocks", []) if pages else []
+        full_text = "\n\n".join(
+            f"[Paragraph {b['paragraph_index']}]\n{b['text']}"
+            for b in blocks
+            if b.get("text")
+        ).strip()
     else:
         raise DocumentExtractionError(f"Unsupported file type for extraction: {resolved_type}")
-
-    full_text = "\n\n".join(
-        f"[Page {page['page_number']}]\n{page['text']}"
-        for page in pages
-        if page["text"]
-    ).strip()
 
     return {
         "document_id": document_id,
         "filename": original_filename,
         "file_type": resolved_type,
-        "page_count": len(pages),
+        "page_count": page_count,
+        "location_mode": "pdf_page" if resolved_type == "pdf" else "docx_paragraph",
         "ocr_required": ocr_required,
         "warning": warning,
         "pages": pages,

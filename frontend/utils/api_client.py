@@ -21,7 +21,7 @@ class APIError(Exception):
 class LegalEaseAPIClient:
     """Synchronous REST client for LegalEase FastAPI endpoints."""
 
-    def __init__(self, base_url: str | None = None, timeout: float = 120.0) -> None:
+    def __init__(self, base_url: str | None = None, timeout: float | tuple[float, float] = (10.0, 180.0)) -> None:
         self.base_url = (base_url or DEFAULT_API_BASE_URL).rstrip("/")
         self.timeout = timeout
 
@@ -30,6 +30,10 @@ class LegalEaseAPIClient:
         kwargs.setdefault("timeout", self.timeout)
         try:
             response = requests.request(method, url, **kwargs)
+        except requests.Timeout as exc:
+            raise APIError(
+                f"Request timed out waiting for LegalEase backend ({path}). Large documents may require more time."
+            ) from exc
         except requests.RequestException as exc:
             raise APIError(
                 f"Unable to reach LegalEase backend at {self.base_url}: {exc}"

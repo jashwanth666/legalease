@@ -12,6 +12,9 @@ from backend.config import Settings, get_settings
 from backend.database import Document, get_db
 from backend.guardrails.document_guard import (
     DocumentValidationError,
+    resolve_contained_path,
+    safe_delete_file,
+    sanitize_filename,
     validate_uploaded_document,
 )
 from backend.ingestion.document_loader import (
@@ -35,6 +38,27 @@ def _generate_document_id() -> str:
     return f"DOC-{uuid4().hex[:8].upper()}"
 
 
+async def _read_upload_in_chunks(
+    file: UploadFile, max_size_bytes: int, chunk_size: int = 65536
+) -> bytes:
+    """Read uploaded bytes incrementally and abort as soon as max_size_bytes is exceeded."""
+    chunks: list[bytes] = []
+    total_size = 0
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        total_size += len(chunk)
+        if total_size > max_size_bytes:
+            max_mb = max_size_bytes // (1024 * 1024)
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"File exceeds the maximum allowed upload size of {max_mb} MB.",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 @router.post(
     "/upload",
     response_model=UploadDocumentResponse,
@@ -45,8 +69,16 @@ async def upload_contract(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
-    """Validate, securely store, and extract page-referenced text from an uploaded PDF/DOCX."""
-    raw_bytes = await file.read()
+    """Validate, securely store, and extract location-referenced text from an uploaded PDF/DOCX."""
+    safe_name = sanitize_filename(file.filename)
+    ext = Path(safe_name).suffix.lower()
+    if ext not in {".pdf", ".docx"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unsupported file type. Only PDF (.pdf) and Word (.docx) documents are allowed.",
+        )
+
+    raw_bytes = await _read_upload_in_chunks(file, settings.max_upload_size_bytes)
 
     try:
         validated = validate_uploaded_document(
@@ -59,7 +91,7 @@ async def upload_contract(
 
     document_id = _generate_document_id()
     stored_filename = f"{document_id}{validated.extension}"
-    stored_path = settings.upload_dir / stored_filename
+    stored_path = resolve_contained_path(settings.upload_dir, settings.upload_dir / stored_filename)
 
     try:
         settings.ensure_directories()
@@ -172,18 +204,14 @@ def delete_document(
             detail=f"Document '{document_id}' not found.",
         )
 
-    upload_file = settings.upload_dir / doc.stored_filename
-    if upload_file.exists():
-        upload_file.unlink(missing_ok=True)
-
-    extracted_file = settings.extracted_dir / f"{document_id}.json"
-    if extracted_file.exists():
-        extracted_file.unlink(missing_ok=True)
+    safe_delete_file(settings.upload_dir, settings.upload_dir / doc.stored_filename)
+    safe_delete_file(settings.extracted_dir, settings.extracted_dir / f"{document_id}.json")
 
     for report in list(doc.reports):
-        report_file = Path(report.report_path)
-        if report_file.exists():
-            report_file.unlink(missing_ok=True)
+        try:
+            safe_delete_file(settings.reports_dir, Path(report.report_path))
+        except DocumentValidationError:
+            logger.warning("Skipped out-of-bounds report path during delete for %s", document_id)
 
     db.delete(doc)
     db.commit()

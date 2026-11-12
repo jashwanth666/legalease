@@ -28,18 +28,29 @@ if selected_id:
         analysis = client.get_analysis(selected_id)
         c1, c2, c3 = st.columns(3)
         c1.metric("Contract", analysis["filename"])
-        c2.metric("Overall Risk", f"{analysis['overall_risk_score']}/100 ({analysis['overall_risk_level'].upper()})")
-        c3.metric("Analysis Mode", analysis.get("analysis_mode", "deterministic_fallback"))
-
-        pdf_bytes = client.download_report_bytes(selected_id)
-        st.download_button(
-            label=f"Download PDF Report (LegalEase_Report_{selected_id}.pdf)",
-            data=pdf_bytes,
-            file_name=f"LegalEase_Report_{selected_id}.pdf",
-            mime="application/pdf",
-            type="primary",
-            use_container_width=True,
+        c2.metric(
+            "Overall Risk",
+            f"{analysis['overall_risk_score']}/100 ({analysis['overall_risk_level'].replace('_', ' ').upper()})",
         )
+        c3.metric("Analysis Mode", analysis.get("analysis_mode", "deterministic_fallback"))
+        if analysis.get("fallback_used"):
+            st.warning(
+                f"Report reflects `{analysis.get('analysis_mode')}` results "
+                f"(Gemini status: `{analysis.get('gemini_status')}` — {analysis.get('fallback_reason')})."
+            )
+
+        if not analysis.get("report_available"):
+            st.warning("PDF report is not available until the complete analysis workflow succeeds.")
+        else:
+            pdf_bytes = client.download_report_bytes(selected_id)
+            st.download_button(
+                label=f"Download PDF Report (LegalEase_Report_{selected_id}.pdf)",
+                data=pdf_bytes,
+                file_name=f"LegalEase_Report_{selected_id}.pdf",
+                mime="application/pdf",
+                type="primary",
+                use_container_width=True,
+            )
     except APIError as exc:
         st.info(f"Report unavailable for active contract: {exc.message}")
 

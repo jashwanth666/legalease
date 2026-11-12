@@ -74,10 +74,11 @@ with left_col:
                 "Document ID": d["document_id"],
                 "Filename": d["filename"],
                 "Type": d["file_type"].upper(),
-                "Pages": d.get("page_count", 0),
+                "Pages": d.get("page_count", 0) if d["file_type"] == "pdf" else "DOCX Paras",
                 "Status": d["processing_status"],
+                "Mode": d.get("analysis_mode") or "—",
                 "Risk Score": (
-                    f"{d['overall_risk_score']}/100 ({(d.get('overall_risk_level') or '').upper()})"
+                    f"{d['overall_risk_score']}/100 ({(d.get('overall_risk_level') or '').replace('_', ' ').upper()})"
                     if d.get("overall_risk_score") is not None
                     else "—"
                 ),

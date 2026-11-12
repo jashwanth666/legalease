@@ -39,15 +39,26 @@ extracted = doc_detail.get("extracted") or {}
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Document ID", doc["document_id"])
 m2.metric("Filename", doc["filename"])
-m3.metric("Pages", doc.get("page_count", 0))
+m3.metric(
+    "Pages" if doc["file_type"] == "pdf" else "Location Mode",
+    doc.get("page_count", 0) if doc["file_type"] == "pdf" else "DOCX Paragraphs",
+)
 m4.metric("Status", doc.get("processing_status", "").upper())
+
+if doc.get("last_error"):
+    st.error(f"Last analysis error: {doc['last_error']}")
 
 if doc.get("processing_status") != "analyzed":
     if doc.get("ocr_required"):
         st.warning("This PDF appears scanned and requires OCR before analysis.")
     else:
-        st.info("This document has not been analyzed yet. Click below to run the LangGraph workflow.")
-        if st.button("Analyze Contract Now", type="primary"):
+        st.info("This document is ready for analysis. Click below to run the LangGraph workflow.")
+        btn_label = (
+            "Retry Analysis"
+            if doc.get("processing_status") in {"failed", "partially_analyzed"}
+            else "Analyze Contract Now"
+        )
+        if st.button(btn_label, type="primary"):
             with st.spinner("Running LegalEase analysis pipeline..."):
                 try:
                     client.analyze_document(selected_id)
@@ -57,16 +68,24 @@ if doc.get("processing_status") != "analyzed":
                     st.error(exc.message)
 
 tab_summary, tab_clauses, tab_pages = st.tabs(
-    ["Executive Summary", "Classified Clauses", "Extracted Page Text"]
+    ["Executive Summary", "Classified Clauses", "Extracted Source Text"]
 )
 
 with tab_summary:
     if doc.get("processing_status") == "analyzed":
         try:
             analysis = client.get_analysis(selected_id)
+            mode = analysis.get("analysis_mode", "deterministic_fallback")
+            gemini_status = analysis.get("gemini_status", "missing_key")
+            if analysis.get("fallback_used"):
+                st.warning(
+                    f"Screening used `{mode}` (Gemini status: `{gemini_status}` — "
+                    f"{analysis.get('fallback_reason') or 'Fallback mode active'}). "
+                    "Deterministic screening outputs are NOT Gemini AI-generated advice."
+                )
             st.caption(
                 f"Detected Type: **{analysis.get('detected_contract_type')}** • "
-                f"Analysis Mode: `{analysis.get('analysis_mode')}`"
+                f"Analysis Mode: `{mode}` • Embeddings: `{analysis.get('embedding_backend')}`"
             )
             st.markdown(analysis.get("executive_summary", "No summary generated."))
         except APIError as exc:
@@ -87,19 +106,20 @@ with tab_clauses:
 with tab_pages:
     pages = extracted.get("pages", [])
     if not pages:
-        st.info("No extracted page data found.")
+        st.info("No extracted text data found.")
     else:
-        for page in pages:
-            pno = page.get("page_number", 1)
-            with st.expander(f"Page {pno}", expanded=(pno == 1)):
+        for idx, page in enumerate(pages, start=1):
+            pno = page.get("page_number")
+            title_lbl = f"Page {pno}" if pno is not None else "DOCX Paragraph Stream (No Fixed Pagination)"
+            with st.expander(title_lbl, expanded=(idx == 1)):
                 if page.get("headings"):
                     st.caption("Detected Headings: " + " | ".join(page["headings"]))
                 st.text_area(
-                    f"Page {pno} text",
+                    title_lbl,
                     value=page.get("text", ""),
                     height=220,
                     disabled=True,
-                    key=f"page_txt_{selected_id}_{pno}",
+                    key=f"page_txt_{selected_id}_{idx}",
                     label_visibility="collapsed",
                 )
 

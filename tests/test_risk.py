@@ -78,13 +78,16 @@ def test_deterministic_risk_assessment_flags_critical_and_high_risks():
     assert findings[0].risk_score >= 70.0
     assert findings[0].page_number == 2
     assert findings[1].risk_level in {"high", "critical"}
-    assert findings[2].risk_level == "low"
+    assert findings[2].finding_type == "no_notable_risk"
+    assert findings[2].risk_level == "no_notable_risk"
+    assert findings[2].risk_score is None
     assert all(f.analysis_source != "gemini" for f in findings)
 
     overview = calculate_overall_risk_overview(findings)
     assert overview.total_clauses == 3
+    assert overview.scored_clauses_count == 2
     assert overview.overall_risk_score > 0
-    assert overview.low_count == 1
+    assert overview.no_notable_risk_count == 1
 
 
 def test_mocked_gemini_risk_assessment_uses_python_scoring():
@@ -181,4 +184,71 @@ def test_rag_faiss_retrieval_and_template_comparison(tmp_path):
     assert comp.reference_source == "service_reference.txt"
     assert "12 months" in comp.differences[0]
     assert "illustrative" in comp.illustrative_notice.lower()
+
+
+def test_gemini_error_classification_and_fallback_tracking():
+    clause = ExtractedClause(
+        clause_id="CL-001",
+        title="5. Liability",
+        category="Liability",
+        original_text="Total liability shall not exceed $100.",
+        page_number=1,
+    )
+
+    class _RateLimitLLM(LLMService):
+        @property
+        def is_available(self) -> bool:
+            return True
+
+        def invoke_structured(self, system_prompt, user_prompt, schema, temperature=0.1):
+            raise RuntimeError("429 ResourceExhausted: API rate limit exceeded")
+
+    agent = RiskAgent(llm_service=_RateLimitLLM(api_key="fake-key"))
+    findings, mode = agent.assess_clauses([clause])
+    assert mode == "deterministic_fallback"
+    assert agent.last_run_meta["gemini_status"] == "rate_limited"
+    assert agent.last_run_meta["fallback_used"] is True
+    assert "rate limit" in str(agent.last_run_meta["fallback_reason"]).lower()
+    assert findings[0].gemini_status == "rate_limited"
+
+
+def test_faiss_rebuilds_when_templates_change(tmp_path):
+    from shutil import copytree
+    from backend.retrieval.embeddings import EmbeddingService
+    from backend.retrieval.vectorstore import ReferenceVectorStore
+
+    src_templates = tmp_path / "templates"
+    nda_dir = src_templates / "nda"
+    nda_dir.mkdir(parents=True)
+    tmpl_file = nda_dir / "nda_reference.txt"
+    tmpl_file.write_text(
+        "1. Confidentiality\n\nReceiving Party shall protect confidential information.",
+        encoding="utf-8",
+    )
+
+    store = ReferenceVectorStore(
+        vectorstore_dir=tmp_path / "vs",
+        templates_dir=src_templates,
+        embedding_service=EmbeddingService(allow_download=False),
+    )
+    count_before = store.build_index()
+    assert count_before == 1
+    hash_before = store.metadata["template_hash"]
+    assert store.metadata["is_semantic_embeddings"] is False
+    assert store.metadata["embedding_dimension"] == 384
+
+    # Modify reference templates and reload cleanly
+    tmpl_file.write_text(
+        "1. Confidentiality\n\nReceiving Party shall protect confidential information.\n\n"
+        "2. Termination\n\nEither party may terminate on 30 days notice.",
+        encoding="utf-8",
+    )
+    store2 = ReferenceVectorStore(
+        vectorstore_dir=tmp_path / "vs",
+        templates_dir=src_templates,
+        embedding_service=EmbeddingService(allow_download=False),
+    )
+    store2.ensure_loaded()
+    assert len(store2.records) == 2
+    assert store2.metadata["template_hash"] != hash_before
 

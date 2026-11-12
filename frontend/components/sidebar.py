@@ -91,6 +91,8 @@ CUSTOM_CSS = """
     letter-spacing: 0.03em;
 }
 
+.le-badge-no_notable_risk { background: #F1F5F9; color: #334155; border: 1px solid #CBD5E1; }
+.le-badge-uncertain { background: #F3E8FF; color: #6B21A8; border: 1px solid #D8B4FE; }
 .le-badge-low { background: #DCFCE7; color: #166534; border: 1px solid #86EFAC; }
 .le-badge-medium { background: #FEF9C3; color: #854D0E; border: 1px solid #FDE047; }
 .le-badge-high { background: #FFEDD5; color: #9A3412; border: 1px solid #FDBA74; }

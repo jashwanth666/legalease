@@ -57,7 +57,10 @@ def get_comparisons(document_id: str, db: Session = Depends(get_db)):
                 "clause_id": comp.clause_id,
                 "clause_title": clause.title if clause else comp.clause_id,
                 "category": clause.category if clause else "Other",
-                "page_number": clause.page_number if clause else 1,
+                "page_number": clause.page_number if clause else None,
+                "location_type": clause.location_type if clause else "pdf_page",
+                "paragraph_index": clause.paragraph_index if clause else None,
+                "section_title": clause.section_title if clause else None,
                 "uploaded_clause": clause.original_text if clause else "",
                 "reference_clause": comp.reference_text,
                 "differences": diffs,
@@ -89,9 +92,16 @@ def rebuild_reference_index(settings: Settings = Depends(get_settings)):
         embedding_service=EmbeddingService(allow_download=False),
     )
     indexed_count = retriever.rebuild()
+    meta = retriever.store.metadata
     return {
         "status": "ok",
         "indexed_clauses": indexed_count,
         "embedding_backend": retriever.store.embedding_service.backend_name,
+        "embedding_model": retriever.store.embedding_service.model_name,
+        "embedding_dimension": meta.get("embedding_dimension", retriever.store.embedding_service.embedding_dimension),
+        "is_semantic_embeddings": retriever.store.embedding_service.is_semantic,
+        "embedding_label": retriever.store.embedding_service.embedding_label,
+        "template_hash": meta.get("template_hash"),
+        "template_version": meta.get("template_version"),
     }
 

@@ -6,7 +6,12 @@ from typing import Any
 from backend.config import LEGAL_DISCLAIMER
 from backend.guardrails.document_guard import wrap_untrusted_contract_text
 from backend.schemas.risk import RiskOverview
-from backend.services.llm_service import LLMService, LLMUnavailableError
+from backend.services.llm_service import (
+    LLMInvocationError,
+    LLMService,
+    LLMUnavailableError,
+    classify_llm_exception,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -112,11 +117,25 @@ def detect_contract_type(filename: str, full_text: str) -> str:
     return "General Commercial Agreement"
 
 
+def _format_location_label(item: dict[str, Any]) -> str:
+    if item.get("location_type") == "docx_paragraph" or item.get("page_number") is None:
+        pidx = item.get("paragraph_index")
+        sec = item.get("section_title")
+        base = f"DOCX Para {pidx}" if pidx else "DOCX"
+        return f"{base} ({sec})" if sec else base
+    return f"Page {item.get('page_number', 1)}"
+
+
 class SummaryAgent:
     """Handles missing clause detection, evidence verification, and executive summaries."""
 
     def __init__(self, llm_service: LLMService | None = None) -> None:
         self.llm_service = llm_service or LLMService()
+        self.last_run_meta: dict[str, Any] = {
+            "gemini_status": "ok" if self.llm_service.is_available else "missing_key",
+            "fallback_used": False,
+            "fallback_reason": None,
+        }
 
     @staticmethod
     def detect_missing_clauses(
@@ -198,7 +217,14 @@ class SummaryAgent:
     ) -> dict[str, Any]:
         """Verify risk findings, template comparisons, and missing clauses against source evidence."""
         clause_map = {c["clause_id"]: c for c in clauses}
-        max_page = max((int(p.get("page_number", 1)) for p in pages), default=1)
+        pdf_pages = [int(p["page_number"]) for p in pages if p.get("page_number") is not None]
+        max_page = max(pdf_pages, default=1)
+        is_docx = any(p.get("location_type") == "docx_paragraph" for p in pages)
+        max_paragraph = max(
+            (len(p.get("blocks", [])) for p in pages if p.get("location_type") == "docx_paragraph"),
+            default=len(clauses) or 1,
+        )
+
         detected_cats = {
             c["category"]
             for c in classified_clauses
@@ -211,22 +237,29 @@ class SummaryAgent:
         for finding in risk_results:
             cid = finding.get("clause_id")
             src_clause = clause_map.get(cid)
-            page_no = int(finding.get("page_number", 0))
+            loc_type = finding.get("location_type") or (src_clause.get("location_type") if src_clause else "pdf_page")
             orig_text = (finding.get("original_clause") or "").strip()
             explanation = (finding.get("explanation") or "").strip()
+
+            if loc_type == "docx_paragraph" or is_docx:
+                para_idx = finding.get("paragraph_index")
+                loc_valid = isinstance(para_idx, int) and 1 <= para_idx <= max(max_paragraph, para_idx)
+            else:
+                page_no = finding.get("page_number")
+                loc_valid = isinstance(page_no, int) and 1 <= page_no <= max_page
 
             valid = (
                 src_clause is not None
                 and bool(orig_text)
                 and orig_text == src_clause["original_text"].strip()
-                and 1 <= page_no <= max_page
+                and loc_valid
                 and bool(explanation)
             )
             finding["verified"] = valid
             if not valid:
                 unverified_count += 1
                 finding["verification_note"] = (
-                    "Could not fully verify clause ID, exact text match, or page reference."
+                    "Could not fully verify clause ID, exact text match, or location reference."
                 )
                 verification_notes.append(f"Risk finding for {cid} marked unverified.")
 
@@ -277,22 +310,56 @@ class SummaryAgent:
         risk_results: list[dict[str, Any]],
         comparison_results: list[dict[str, Any]],
         missing_clauses: dict[str, Any],
+        fallback_reason: str | None = None,
     ) -> tuple[str, str]:
-        """Generate plain-English executive summary via Gemini or deterministic fallback."""
+        """Generate plain-English executive summary from verified findings."""
+        verified_risks = [r for r in risk_results if r.get("verified", True)]
+        verified_comparisons = [c for c in comparison_results if c.get("verified", True)]
+
         if self.llm_service.is_available:
             try:
                 summary_text = self._generate_with_gemini(
-                    filename, contract_type, overview, risk_results, comparison_results, missing_clauses
+                    filename, contract_type, overview, verified_risks, verified_comparisons, missing_clauses
                 )
+                self.last_run_meta = {
+                    "gemini_status": "ok",
+                    "fallback_used": False,
+                    "fallback_reason": None,
+                }
                 return summary_text, "gemini"
-            except LLMUnavailableError:
-                pass
+            except (LLMUnavailableError, LLMInvocationError) as exc:
+                self.last_run_meta = {
+                    "gemini_status": exc.status_label,
+                    "fallback_used": True,
+                    "fallback_reason": exc.reason,
+                }
+                fallback_reason = fallback_reason or exc.reason
             except Exception as exc:
-                logger.warning("Gemini summary generation failed (%s); using fallback", type(exc).__name__)
+                status_label, reason = classify_llm_exception(exc)
+                logger.warning("Gemini summary generation failed (%s); using fallback", status_label)
+                self.last_run_meta = {
+                    "gemini_status": status_label,
+                    "fallback_used": True,
+                    "fallback_reason": reason,
+                }
+                fallback_reason = fallback_reason or reason
+        else:
+            self.last_run_meta = {
+                "gemini_status": "missing_key",
+                "fallback_used": True,
+                "fallback_reason": fallback_reason or "Gemini API key is not configured.",
+            }
+            fallback_reason = fallback_reason or "Gemini API key is not configured."
 
         return (
             self._generate_deterministic_summary(
-                filename, contract_type, overview, risk_results, comparison_results, missing_clauses
+                filename,
+                contract_type,
+                overview,
+                verified_risks,
+                verified_comparisons,
+                missing_clauses,
+                fallback_reason=fallback_reason,
             ),
             "deterministic_fallback",
         )
@@ -306,10 +373,15 @@ class SummaryAgent:
         comparison_results: list[dict[str, Any]],
         missing_clauses: dict[str, Any],
     ) -> str:
-        top_risks = sorted(risk_results, key=lambda r: r.get("risk_score", 0), reverse=True)[:5]
+        top_risks = sorted(
+            risk_results,
+            key=lambda r: (r.get("risk_score") if r.get("risk_score") is not None else -1.0),
+            reverse=True,
+        )[:5]
         risk_lines = [
-            f"- {r['clause_id']} (Page {r['page_number']}, {r['risk_level'].upper()} {r['risk_score']}/100): "
-            f"{r['risk_title']} — {wrap_untrusted_contract_text(r['explanation'])}"
+            f"- {r['clause_id']} ({_format_location_label(r)}, {str(r['risk_level']).upper()}"
+            + (f" {r['risk_score']}/100" if r.get("risk_score") is not None else "")
+            + f"): {r['risk_title']} — {wrap_untrusted_contract_text(r['explanation'])}"
             for r in top_risks
         ]
         comp_lines = [
@@ -326,9 +398,10 @@ class SummaryAgent:
             f"Detected Type: {contract_type}\n"
             f"Illustrative Overall Risk Score: {overview.overall_risk_score}/100 ({overview.overall_risk_level.upper()})\n"
             f"Clause Counts: Critical={overview.critical_count}, High={overview.high_count}, "
-            f"Medium={overview.medium_count}, Low={overview.low_count}\n\n"
-            f"Top Risk Findings:\n{chr(10).join(risk_lines) or 'None'}\n\n"
-            f"Template Differences:\n{chr(10).join(comp_lines) or 'None'}\n\n"
+            f"Medium={overview.medium_count}, Low={overview.low_count}, "
+            f"Uncertain={overview.uncertain_count}, NoNotablePattern={overview.no_notable_risk_count}\n\n"
+            f"Verified Risk Findings:\n{chr(10).join(risk_lines) or 'None'}\n\n"
+            f"Verified Template Differences:\n{chr(10).join(comp_lines) or 'None'}\n\n"
             f"Missing Categories:\n{chr(10).join(missing_lines) or 'None detected'}\n"
         )
         body = self.llm_service.invoke_text(SUMMARY_SYSTEM_PROMPT, user_prompt)
@@ -342,10 +415,15 @@ class SummaryAgent:
         risk_results: list[dict[str, Any]],
         comparison_results: list[dict[str, Any]],
         missing_clauses: dict[str, Any],
+        fallback_reason: str | None = None,
     ) -> str:
         top_risks = [
             r
-            for r in sorted(risk_results, key=lambda x: x.get("risk_score", 0), reverse=True)
+            for r in sorted(
+                risk_results,
+                key=lambda x: (x.get("risk_score") if x.get("risk_score") is not None else -1.0),
+                reverse=True,
+            )
             if r.get("risk_level") in {"critical", "high", "medium"}
         ][:4]
         missing_items = missing_clauses.get("missing_categories", [])
@@ -356,22 +434,27 @@ class SummaryAgent:
             and "substantially aligns" not in c["differences"][0].lower()
         ][:4]
 
+        reason_banner = fallback_reason or "Gemini AI unavailable"
         lines = [
-            f"### Executive Summary (Deterministic Screening Mode — Gemini Unavailable)",
+            f"### Executive Summary (Deterministic Screening Mode — {reason_banner})",
             f"**Document:** {filename} | **Detected Contract Type:** {contract_type}",
             (
                 f"**Overall Illustrative Risk Score:** {overview.overall_risk_score}/100 "
                 f"({overview.overall_risk_level.upper()}) across {overview.total_clauses} extracted clauses "
                 f"({overview.critical_count} critical, {overview.high_count} high, "
-                f"{overview.medium_count} medium, {overview.low_count} low)."
+                f"{overview.medium_count} medium, {overview.low_count} low, "
+                f"{overview.uncertain_count} uncertain, {overview.no_notable_risk_count} no notable pattern detected)."
             ),
+            f"*{overview.scoring_limitations}*",
             "",
             "**Priority Clauses for Review:**",
         ]
         if top_risks:
             for r in top_risks:
+                loc = _format_location_label(r)
+                score_str = f" {r['risk_score']}/100" if r.get("risk_score") is not None else ""
                 lines.append(
-                    f"- **{r['clause_id']}** (Page {r['page_number']}, {r['risk_level'].upper()} {r['risk_score']}/100): "
+                    f"- **{r['clause_id']}** ({loc}, {r['risk_level'].upper()}{score_str}): "
                     f"{r['risk_title']}. Suggested action: {r['suggested_action']}"
                 )
         else:

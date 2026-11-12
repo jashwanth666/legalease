@@ -43,9 +43,12 @@ def render_upload_workflow(client: LegalEaseAPIClient) -> None:
                     )
                     st.session_state["selected_document_id"] = resp["document_id"]
                     st.session_state["last_upload_response"] = resp
-                    st.success(
-                        f"Uploaded successfully as **{resp['document_id']}** ({resp['page_count']} pages)."
+                    loc_summary = (
+                        f"{resp['page_count']} pages"
+                        if resp["file_type"] == "pdf"
+                        else "DOCX paragraphs indexed"
                     )
+                    st.success(f"Uploaded successfully as **{resp['document_id']}** ({loc_summary}).")
                     st.rerun()
                 except APIError as exc:
                     st.error(f"Upload failed: {exc.message}")
@@ -66,8 +69,15 @@ def render_upload_workflow(client: LegalEaseAPIClient) -> None:
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Document ID", doc["document_id"])
             m2.metric("Format", doc["file_type"].upper())
-            m3.metric("Pages", doc.get("page_count", 0))
-            m4.metric("Status", doc.get("processing_status", "uploaded").upper())
+            m3.metric(
+                "Pages" if doc["file_type"] == "pdf" else "Layout",
+                doc.get("page_count", 0) if doc["file_type"] == "pdf" else "DOCX Paras",
+            )
+            proc_status = doc.get("processing_status", "uploaded")
+            m4.metric("Status", proc_status.upper())
+
+            if doc.get("last_error"):
+                st.error(f"Previous run reported an error: {doc['last_error']}")
 
             if doc.get("ocr_required"):
                 st.warning(
@@ -79,16 +89,26 @@ def render_upload_workflow(client: LegalEaseAPIClient) -> None:
                     "AI analysis will NOT start automatically. Click **Analyze Contract** below to run "
                     "clause splitting, classification, risk scoring, RAG template comparison, and PDF report generation."
                 )
-                if st.button("Analyze Contract", type="primary", use_container_width=True):
+                btn_label = (
+                    "Retry Contract Analysis"
+                    if proc_status in {"failed", "partially_analyzed"}
+                    else "Analyze Contract"
+                )
+                if st.button(btn_label, type="primary", use_container_width=True):
                     with st.spinner(
                         "Running LangGraph multi-stage analysis (splitting, classification, "
                         "risk scoring, FAISS comparison, evidence verification, PDF report)..."
                     ):
                         try:
                             result = client.analyze_document(doc["document_id"])
+                            if result.get("fallback_used"):
+                                st.warning(
+                                    f"Analysis completed in `{result.get('analysis_mode')}` mode "
+                                    f"(Gemini status: `{result.get('gemini_status')}` — {result.get('fallback_reason')})."
+                                )
                             st.success(
                                 f"Analysis complete! Overall Illustrative Risk Score: "
-                                f"**{result['overall_risk_score']}/100 ({result['overall_risk_level'].upper()})**."
+                                f"**{result['overall_risk_score']}/100 ({result['overall_risk_level'].replace('_', ' ').upper()})**."
                             )
                         except APIError as exc:
                             st.error(f"Analysis failed: {exc.message}")

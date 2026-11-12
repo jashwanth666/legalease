@@ -10,6 +10,12 @@ import docx
 import pymupdf as fitz
 
 
+MAX_PDF_PAGES = 500
+MAX_DOCX_ENTRIES = 500
+MAX_DOCX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024  # 50 MB decompression guard
+MAX_DOCX_COMPRESSION_RATIO = 100
+
+
 class DocumentValidationError(Exception):
     """Raised when an uploaded file fails security, format, or integrity checks."""
 
@@ -115,13 +121,18 @@ def _validate_pdf_bytes(content: bytes) -> int:
                 "The PDF contains no pages.",
                 status_code=400,
             )
+        if doc.page_count > MAX_PDF_PAGES:
+            raise DocumentValidationError(
+                f"The PDF exceeds the maximum allowed page limit ({MAX_PDF_PAGES} pages).",
+                status_code=413,
+            )
         return int(doc.page_count)
     finally:
         doc.close()
 
 
 def _validate_docx_bytes(content: bytes) -> int:
-    """Verify DOCX ZIP container structure and python-docx readability."""
+    """Verify DOCX ZIP container structure, ZIP-bomb bounds, and python-docx readability."""
     if not content.startswith(b"PK\x03\x04"):
         raise DocumentValidationError(
             "File content does not match a valid DOCX archive.",
@@ -130,7 +141,36 @@ def _validate_docx_bytes(content: bytes) -> int:
 
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as zf:
-            names = set(zf.namelist())
+            infolist = zf.infolist()
+            if len(infolist) > MAX_DOCX_ENTRIES:
+                raise DocumentValidationError(
+                    "The DOCX archive contains too many entries.",
+                    status_code=400,
+                )
+            total_uncompressed = 0
+            names: set[str] = set()
+            for info in infolist:
+                norm_name = info.filename.replace("\\", "/")
+                if norm_name.startswith("/") or ".." in Path(norm_name).parts:
+                    raise DocumentValidationError(
+                        "Invalid DOCX archive entry path detected.",
+                        status_code=400,
+                    )
+                total_uncompressed += max(0, int(info.file_size))
+                if total_uncompressed > MAX_DOCX_UNCOMPRESSED_BYTES:
+                    raise DocumentValidationError(
+                        "The DOCX archive uncompressed size exceeds safety limits.",
+                        status_code=413,
+                    )
+                if info.file_size > 1_000_000:
+                    ratio = info.file_size / max(1, info.compress_size)
+                    if ratio > MAX_DOCX_COMPRESSION_RATIO:
+                        raise DocumentValidationError(
+                            "Suspicious compression ratio detected in DOCX archive.",
+                            status_code=400,
+                        )
+                names.add(info.filename)
+
             if "word/document.xml" not in names:
                 raise DocumentValidationError(
                     "Invalid DOCX structure: missing word/document.xml.",
@@ -159,8 +199,29 @@ def _validate_docx_bytes(content: bytes) -> int:
             status_code=400,
         ) from exc
 
-    # DOCX does not embed fixed pagination like PDF; loader calculates logical pages.
-    return 1
+    # DOCX uses paragraph/section references rather than fixed page numbers.
+    return 0
+
+
+def resolve_contained_path(base_dir: Path, target_path: Path) -> Path:
+    """Verify target_path stays strictly inside base_dir after symlink/path resolution."""
+    base_resolved = base_dir.resolve()
+    target_resolved = target_path.resolve()
+    if not target_resolved.is_relative_to(base_resolved):
+        raise DocumentValidationError(
+            "Access denied: file path escapes managed application directory.",
+            status_code=403,
+        )
+    return target_resolved
+
+
+def safe_delete_file(base_dir: Path, target_path: Path) -> bool:
+    """Safely delete a file only if it resolves strictly inside base_dir."""
+    resolved = resolve_contained_path(base_dir, target_path)
+    if resolved.exists() and resolved.is_file():
+        resolved.unlink(missing_ok=True)
+        return True
+    return False
 
 
 def wrap_untrusted_contract_text(text: str) -> str:

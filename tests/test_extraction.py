@@ -83,12 +83,21 @@ def test_extract_docx_with_page_break_and_tables(tmp_path: Path):
     )
 
     assert result["ocr_required"] is False
-    assert result["page_count"] == 2
-    assert result["pages"][0]["page_number"] == 1
+    # DOCX never invents fixed page numbers; uses paragraph references instead
+    assert result["page_count"] == 0
+    assert result["location_mode"] == "docx_paragraph"
+    assert result["pages"][0]["page_number"] is None
+    assert result["pages"][0]["location_type"] == "docx_paragraph"
     assert "Confidentiality" in result["pages"][0]["text"]
-    assert result["pages"][1]["page_number"] == 2
-    assert "Phase | Amount" in result["pages"][1]["text"]
-    assert "Initial | $2,500" in result["pages"][1]["text"]
+    assert "Phase | Amount" in result["pages"][0]["text"]
+    assert "Initial | $2,500" in result["pages"][0]["text"]
+
+    clauses = split_pages_into_clauses(result["pages"])
+    assert len(clauses) == 2
+    assert all(c.page_number is None for c in clauses)
+    assert all(c.location_type == "docx_paragraph" for c in clauses)
+    assert clauses[0].paragraph_index == 1
+    assert clauses[1].paragraph_index > clauses[0].paragraph_index
 
 
 def test_clause_splitting_preserves_full_text_and_page_numbers():
@@ -179,3 +188,60 @@ def test_classification_with_mocked_gemini_structured_output():
     assert classifications[0].category == "Termination"
     assert classifications[0].confidence == 0.95
     assert classifications[0].classification_source == "gemini"
+
+
+def test_clause_splitting_handles_roman_numerals_inline_caps_multipage_and_signatures():
+    pages = [
+        {
+            "page_number": 1,
+            "location_type": "pdf_page",
+            "headings": [],
+            "text": (
+                "SERVICE AGREEMENT\n\n"
+                "Page 1 of 3\n\n"
+                "IV. CONFIDENTIALITY\n\n"
+                "Receiving Party shall hold all proprietary information in strict confidence.\n\n"
+                "8. TERMINATION Either party may terminate upon 30 days notice. "
+                "9. LIMITATION OF LIABILITY Neither party shall be liable for indirect damages"
+            ),
+        },
+        {
+            "page_number": 2,
+            "location_type": "pdf_page",
+            "headings": [],
+            "text": (
+                "and total aggregate liability is capped at twelve months of fees.\n\n"
+                "IN WITNESS WHEREOF, the parties have executed this Agreement.\n\n"
+                "By: ______________________\n\n"
+                "Date: ______________________"
+            ),
+        },
+    ]
+    clauses = split_pages_into_clauses(pages)
+    assert len(clauses) == 3
+    assert clauses[0].title == "IV. CONFIDENTIALITY"
+    assert clauses[0].category == "Confidentiality"
+    assert clauses[1].title == "8. TERMINATION"
+    assert clauses[2].title == "9. LIMITATION OF LIABILITY"
+    # Multi-page clause continuation preserves start page 1 and end page 2 plus complete text
+    assert clauses[2].page_number == 1
+    assert clauses[2].end_page_number == 2
+    assert "twelve months of fees" in clauses[2].original_text
+    # Signature block boilerplate is excluded
+    assert not any("WITNESS WHEREOF" in c.original_text for c in clauses)
+
+
+def test_clause_splitting_flags_uncertain_unheaded_prose():
+    clauses = split_pages_into_clauses(
+        [
+            {
+                "page_number": 1,
+                "location_type": "pdf_page",
+                "headings": [],
+                "text": "The vendor agrees to cooperate in good faith with customer audits upon advance request.",
+            }
+        ]
+    )
+    assert len(clauses) == 1
+    assert clauses[0].segmentation_uncertain is True
+    assert clauses[0].segmentation_confidence == "medium"

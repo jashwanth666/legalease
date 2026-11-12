@@ -2,6 +2,7 @@
 
 import io
 from pathlib import Path
+import zipfile
 
 import docx
 import pymupdf as fitz
@@ -10,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from backend.config import Settings, get_settings
 from backend.database.db import configure_database
+from backend.guardrails.document_guard import DocumentValidationError, resolve_contained_path
 from backend.main import create_app
 
 
@@ -154,6 +156,8 @@ def test_upload_docx_success(client):
     assert payload["ocr_required"] is False
 
     detail = test_client.get(f"/api/documents/{payload['document_id']}").json()
+    assert detail["extracted"]["location_mode"] == "docx_paragraph"
+    assert detail["extracted"]["pages"][0]["page_number"] is None
     text = detail["extracted"]["pages"][0]["text"]
     assert "Client agrees to pay fees within 30 days of invoice." in text
     assert "Milestone | Fee" in text
@@ -222,3 +226,30 @@ def test_reject_oversized_upload(client):
         files={"file": ("huge.pdf", oversized, "application/pdf")},
     )
     assert resp.status_code == 413
+
+
+def test_reject_docx_zip_traversal_and_path_containment(client, tmp_path: Path):
+    test_client, _ = client
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("../../evil.txt", b"escape")
+        zf.writestr("word/document.xml", b"<document/>")
+
+    resp = test_client.post(
+        "/api/upload",
+        files={
+            "file": (
+                "traversal.docx",
+                buf.getvalue(),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+    assert resp.status_code == 400
+    assert "Invalid DOCX archive entry" in resp.json()["detail"]
+
+    base = tmp_path / "managed"
+    base.mkdir()
+    outside = tmp_path / "outside.pdf"
+    with pytest.raises(DocumentValidationError):
+        resolve_contained_path(base, outside)

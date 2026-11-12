@@ -60,6 +60,7 @@ class EmbeddingService(Embeddings):
         self.allow_download = allow_download
         self._model = None
         self._backend_name = "uninitialized"
+        self._dimension = 384
         self._fallback = DeterministicHashEmbeddings(dim=384)
 
     def _is_model_cached(self) -> bool:
@@ -91,22 +92,45 @@ class EmbeddingService(Embeddings):
             try:
                 self._model = SentenceTransformer(self.model_name, local_files_only=True)
                 self._backend_name = "sentence_transformers"
+                dim = self._model.get_sentence_embedding_dimension()
+                if isinstance(dim, int) and dim > 0:
+                    self._dimension = dim
                 return
             except Exception:
                 if self.allow_download:
                     self._model = SentenceTransformer(self.model_name)
                     self._backend_name = "sentence_transformers"
+                    dim = self._model.get_sentence_embedding_dimension()
+                    if isinstance(dim, int) and dim > 0:
+                        self._dimension = dim
                     return
         except Exception as exc:
             logger.info("SentenceTransformer unavailable (%s); using deterministic hash embeddings", exc)
 
         self._model = None
         self._backend_name = "deterministic_hash"
+        self._dimension = self._fallback.dim
 
     @property
     def backend_name(self) -> str:
         self._ensure_model()
         return self._backend_name
+
+    @property
+    def is_semantic(self) -> bool:
+        """True only when a true semantic SentenceTransformer model is active."""
+        return self.backend_name == "sentence_transformers"
+
+    @property
+    def embedding_dimension(self) -> int:
+        self._ensure_model()
+        return self._dimension
+
+    @property
+    def embedding_label(self) -> str:
+        if self.is_semantic:
+            return f"SentenceTransformers ({self.model_name}) — semantic"
+        return "Deterministic Hash Embeddings (n-gram fallback — non-semantic)"
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         self._ensure_model()

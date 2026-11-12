@@ -9,6 +9,8 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import LETTER
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
     PageBreak,
     Paragraph,
@@ -29,6 +31,8 @@ TEXT_DARK = colors.HexColor("#0F172A")
 TEXT_MUTED = colors.HexColor("#475569")
 
 RISK_COLORS = {
+    "no_notable_risk": colors.HexColor("#475569"),
+    "uncertain": colors.HexColor("#7C3AED"),
     "low": colors.HexColor("#16A34A"),
     "medium": colors.HexColor("#CA8A04"),
     "high": colors.HexColor("#EA580C"),
@@ -36,8 +40,76 @@ RISK_COLORS = {
 }
 
 
+def _resolve_pdf_fonts() -> tuple[str, str, str]:
+    """Register a Unicode TTF font family when available, else fallback to Helvetica."""
+    candidates = [
+        (
+            "LegalEaseSans",
+            Path(r"C:\Windows\Fonts\segoeui.ttf"),
+            Path(r"C:\Windows\Fonts\segoeuib.ttf"),
+            Path(r"C:\Windows\Fonts\segoeuii.ttf"),
+        ),
+        (
+            "LegalEaseArial",
+            Path(r"C:\Windows\Fonts\arial.ttf"),
+            Path(r"C:\Windows\Fonts\arialbd.ttf"),
+            Path(r"C:\Windows\Fonts\ariali.ttf"),
+        ),
+        (
+            "LegalEaseDejaVu",
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf"),
+        ),
+    ]
+    registered = set(pdfmetrics.getRegisteredFontNames())
+    for family, reg_path, bold_path, italic_path in candidates:
+        if reg_path.exists() and bold_path.exists():
+            try:
+                reg_name = family
+                bold_name = f"{family}-Bold"
+                ital_name = f"{family}-Italic"
+                if reg_name not in registered:
+                    pdfmetrics.registerFont(TTFont(reg_name, str(reg_path)))
+                if bold_name not in registered:
+                    pdfmetrics.registerFont(TTFont(bold_name, str(bold_path)))
+                if italic_path.exists() and ital_name not in registered:
+                    pdfmetrics.registerFont(TTFont(ital_name, str(italic_path)))
+                    pdfmetrics.registerFontFamily(
+                        family,
+                        normal=reg_name,
+                        bold=bold_name,
+                        italic=ital_name,
+                    )
+                else:
+                    ital_name = reg_name
+                    pdfmetrics.registerFontFamily(
+                        family,
+                        normal=reg_name,
+                        bold=bold_name,
+                    )
+                return reg_name, bold_name, ital_name
+            except Exception:
+                continue
+    return "Helvetica", "Helvetica-Bold", "Helvetica-Oblique"
+
+
+BODY_FONT, BOLD_FONT, ITALIC_FONT = _resolve_pdf_fonts()
+
+
 def _safe(value: Any) -> str:
     return escape(str(value or "")).replace("\n", "<br/>")
+
+
+def _format_loc(item: dict[str, Any]) -> str:
+    if item.get("location_type") == "docx_paragraph" or item.get("page_number") is None:
+        pidx = item.get("paragraph_index")
+        return f"Para {pidx}" if pidx else "DOCX"
+    start = item.get("page_number")
+    end = item.get("end_page_number")
+    if end and end != start:
+        return f"p.{start}-{end}"
+    return f"Page {start}"
 
 
 def _draw_header_footer(canvas, doc, document_id: str) -> None:
@@ -48,16 +120,16 @@ def _draw_header_footer(canvas, doc, document_id: str) -> None:
     canvas.setStrokeColor(BORDER)
     canvas.setLineWidth(0.6)
     canvas.line(0.65 * inch, height - 0.55 * inch, width - 0.65 * inch, height - 0.55 * inch)
-    canvas.setFont("Helvetica-Bold", 9)
+    canvas.setFont(BOLD_FONT, 9)
     canvas.setFillColor(NAVY)
     canvas.drawString(0.65 * inch, height - 0.45 * inch, "LegalEase | Contract Intelligence & Risk Report")
-    canvas.setFont("Helvetica", 8.5)
+    canvas.setFont(BODY_FONT, 8.5)
     canvas.setFillColor(TEXT_MUTED)
     canvas.drawRightString(width - 0.65 * inch, height - 0.45 * inch, f"Document ID: {document_id}")
 
     # Footer
     canvas.line(0.65 * inch, 0.55 * inch, width - 0.65 * inch, 0.55 * inch)
-    canvas.setFont("Helvetica", 8)
+    canvas.setFont(BODY_FONT, 8)
     canvas.setFillColor(TEXT_MUTED)
     canvas.drawString(
         0.65 * inch,
@@ -86,7 +158,7 @@ def generate_analysis_pdf(
     title_style = ParagraphStyle(
         "LegalTitle",
         parent=styles["Title"],
-        fontName="Helvetica-Bold",
+        fontName=BOLD_FONT,
         fontSize=20,
         textColor=NAVY,
         spaceAfter=6,
@@ -94,7 +166,7 @@ def generate_analysis_pdf(
     subtitle_style = ParagraphStyle(
         "LegalSubtitle",
         parent=styles["Normal"],
-        fontName="Helvetica",
+        fontName=BODY_FONT,
         fontSize=10,
         textColor=TEXT_MUTED,
         spaceAfter=14,
@@ -102,7 +174,7 @@ def generate_analysis_pdf(
     section_style = ParagraphStyle(
         "LegalSection",
         parent=styles["Heading2"],
-        fontName="Helvetica-Bold",
+        fontName=BOLD_FONT,
         fontSize=13,
         textColor=NAVY,
         spaceBefore=12,
@@ -111,7 +183,7 @@ def generate_analysis_pdf(
     body_style = ParagraphStyle(
         "LegalBody",
         parent=styles["BodyText"],
-        fontName="Helvetica",
+        fontName=BODY_FONT,
         fontSize=9.5,
         leading=13.5,
         textColor=TEXT_DARK,
@@ -120,7 +192,7 @@ def generate_analysis_pdf(
     small_style = ParagraphStyle(
         "LegalSmall",
         parent=styles["BodyText"],
-        fontName="Helvetica",
+        fontName=BODY_FONT,
         fontSize=8.5,
         leading=11.5,
         textColor=TEXT_MUTED,
@@ -141,19 +213,32 @@ def generate_analysis_pdf(
 
     # 2. Document Details
     story.append(Paragraph("1. Document Details", section_style))
+    page_disp = (
+        "DOCX paragraphs (no fixed pages)"
+        if str(document_meta.get("file_type", "")).lower() == "docx"
+        else str(document_meta.get("page_count", 0))
+    )
+    mode_val = str(document_meta.get("analysis_mode", "deterministic_fallback"))
+    gemini_stat = str(document_meta.get("gemini_status") or "missing_key")
     details_rows = [
         ["Document ID", str(doc_id), "Filename", str(document_meta.get("filename", ""))],
         [
             "File Type",
             str(document_meta.get("file_type", "")).upper(),
-            "Pages",
-            str(document_meta.get("page_count", 0)),
+            "Location Scope",
+            page_disp,
         ],
         [
             "Contract Type",
             str(document_meta.get("detected_contract_type") or missing_clauses.get("contract_type", "General")),
             "Analysis Mode",
-            str(document_meta.get("analysis_mode", "deterministic_fallback")),
+            f"{mode_val} (Gemini: {gemini_stat})",
+        ],
+        [
+            "Embeddings",
+            str(document_meta.get("embedding_backend") or "deterministic_hash"),
+            "Fallback Reason",
+            str(document_meta.get("fallback_reason") or "None"),
         ],
     ]
     details_table = Table(details_rows, colWidths=[1.2 * inch, 2.2 * inch, 1.2 * inch, 2.4 * inch])
@@ -162,9 +247,10 @@ def generate_analysis_pdf(
             [
                 ("BACKGROUND", (0, 0), (0, -1), LIGHT_BG),
                 ("BACKGROUND", (2, 0), (2, -1), LIGHT_BG),
-                ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-                ("FONTNAME", (2, 0), (2, -1), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+                ("FONTNAME", (0, 0), (-1, -1), BODY_FONT),
+                ("FONTNAME", (0, 0), (0, -1), BOLD_FONT),
+                ("FONTNAME", (2, 0), (2, -1), BOLD_FONT),
+                ("FONTSIZE", (0, 0), (-1, -1), 8.2),
                 ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                 ("PADDING", (0, 0), (-1, -1), 5),
@@ -177,9 +263,9 @@ def generate_analysis_pdf(
     # 3. Overall Risk Overview & 4. Risk Score Distribution
     story.append(Paragraph("2. Overall Risk Overview &amp; Distribution", section_style))
     overall_score = overview.get("overall_risk_score", 0.0)
-    overall_level = str(overview.get("overall_risk_level", "low")).upper()
+    overall_level = str(overview.get("overall_risk_level", "no_notable_risk")).replace("_", " ").upper()
     overview_rows = [
-        ["Overall Illustrative Risk Score", "Overall Risk Level", "Total Clauses"],
+        ["Overall Illustrative Risk Score", "Overall Screening Level", "Total Clauses"],
         [f"{overall_score} / 100", overall_level, str(overview.get("total_clauses", len(clauses)))],
     ]
     overview_table = Table(overview_rows, colWidths=[2.4 * inch, 2.3 * inch, 2.3 * inch])
@@ -188,8 +274,7 @@ def generate_analysis_pdf(
             [
                 ("BACKGROUND", (0, 0), (-1, 0), NAVY),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
+                ("FONTNAME", (0, 0), (-1, -1), BOLD_FONT),
                 ("FONTSIZE", (0, 0), (-1, -1), 9.5),
                 ("ALIGN", (0, 0), (-1, -1), "CENTER"),
                 ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
@@ -201,35 +286,40 @@ def generate_analysis_pdf(
     story.append(Spacer(1, 6))
 
     dist_rows = [
-        ["Risk Level", "Score Range", "Clause Count"],
-        ["Low", "0 – 29", str(overview.get("low_count", 0))],
-        ["Medium", "30 – 59", str(overview.get("medium_count", 0))],
-        ["High", "60 – 79", str(overview.get("high_count", 0))],
-        ["Critical", "80 – 100", str(overview.get("critical_count", 0))],
+        ["Screening Classification", "Score / Meaning", "Clause Count"],
+        ["Critical Risk", "80 – 100 (Detected Risk)", str(overview.get("critical_count", 0))],
+        ["High Risk", "60 – 79 (Detected Risk)", str(overview.get("high_count", 0))],
+        ["Medium Risk", "30 – 59 (Detected Risk)", str(overview.get("medium_count", 0))],
+        ["Low Risk", "0 – 29 (Detected Risk)", str(overview.get("low_count", 0))],
+        ["Uncertain / Review", "Ambiguous or Low Confidence (Unscored)", str(overview.get("uncertain_count", 0))],
+        ["No Notable Pattern", "Routine Terms Matched No Flags (Unscored)", str(overview.get("no_notable_risk_count", 0))],
     ]
-    dist_table = Table(dist_rows, colWidths=[2.4 * inch, 2.3 * inch, 2.3 * inch])
+    dist_table = Table(dist_rows, colWidths=[2.2 * inch, 3.0 * inch, 1.8 * inch])
     dist_table.setStyle(
         TableStyle(
             [
                 ("BACKGROUND", (0, 0), (-1, 0), BLUE),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTNAME", (0, 0), (-1, -1), BODY_FONT),
+                ("FONTNAME", (0, 0), (-1, 0), BOLD_FONT),
                 ("FONTSIZE", (0, 0), (-1, -1), 8.5),
-                ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+                ("ALIGN", (2, 0), (2, -1), "CENTER"),
                 ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
                 ("PADDING", (0, 0), (-1, -1), 5),
-                ("TEXTCOLOR", (0, 1), (0, 1), RISK_COLORS["low"]),
-                ("TEXTCOLOR", (0, 2), (0, 2), RISK_COLORS["medium"]),
-                ("TEXTCOLOR", (0, 3), (0, 3), RISK_COLORS["high"]),
-                ("TEXTCOLOR", (0, 4), (0, 4), RISK_COLORS["critical"]),
-                ("FONTNAME", (0, 1), (0, 4), "Helvetica-Bold"),
+                ("TEXTCOLOR", (0, 1), (0, 1), RISK_COLORS["critical"]),
+                ("TEXTCOLOR", (0, 2), (0, 2), RISK_COLORS["high"]),
+                ("TEXTCOLOR", (0, 3), (0, 3), RISK_COLORS["medium"]),
+                ("TEXTCOLOR", (0, 4), (0, 4), RISK_COLORS["low"]),
+                ("TEXTCOLOR", (0, 5), (0, 5), RISK_COLORS["uncertain"]),
+                ("TEXTCOLOR", (0, 6), (0, 6), RISK_COLORS["no_notable_risk"]),
+                ("FONTNAME", (0, 1), (0, 6), BOLD_FONT),
             ]
         )
     )
     story.append(dist_table)
     story.append(
         Paragraph(
-            _safe(overview.get("scoring_note", "Illustrative screening scores only.")),
+            _safe(overview.get("scoring_limitations") or overview.get("scoring_note", "Illustrative screening scores only.")),
             small_style,
         )
     )
@@ -244,24 +334,25 @@ def generate_analysis_pdf(
     # 6. Extracted Clause Details
     story.append(PageBreak())
     story.append(Paragraph("4. Extracted Clauses", section_style))
-    clause_rows = [["ID", "Page", "Category", "Title & Description"]]
+    clause_rows = [["ID", "Location", "Category", "Title & Description"]]
     for cl in clauses:
         desc = cl.get("description") or cl.get("original_text", "")[:160]
         clause_rows.append(
             [
                 Paragraph(_safe(cl.get("clause_id")), small_style),
-                Paragraph(str(cl.get("page_number", 1)), small_style),
+                Paragraph(_safe(_format_loc(cl)), small_style),
                 Paragraph(_safe(cl.get("category")), small_style),
                 Paragraph(f"<b>{_safe(cl.get('title'))}</b><br/>{_safe(desc)}", small_style),
             ]
         )
-    clause_table = Table(clause_rows, colWidths=[0.7 * inch, 0.55 * inch, 1.35 * inch, 4.4 * inch], repeatRows=1)
+    clause_table = Table(clause_rows, colWidths=[0.7 * inch, 0.75 * inch, 1.3 * inch, 4.25 * inch], repeatRows=1)
     clause_table.setStyle(
         TableStyle(
             [
                 ("BACKGROUND", (0, 0), (-1, 0), NAVY),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTNAME", (0, 0), (-1, -1), BODY_FONT),
+                ("FONTNAME", (0, 0), (-1, 0), BOLD_FONT),
                 ("FONTSIZE", (0, 0), (-1, 0), 8.5),
                 ("GRID", (0, 0), (-1, -1), 0.4, BORDER),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -274,12 +365,14 @@ def generate_analysis_pdf(
     # 7. Risk Assessment
     story.append(Paragraph("5. Detailed Risk Assessment", section_style))
     for rf in risk_results:
-        level = str(rf.get("risk_level", "low")).lower()
+        level = str(rf.get("risk_level", "no_notable_risk")).lower().replace("_", " ").upper()
         verified_tag = "Verified" if rf.get("verified", True) else "Unverified"
+        score_part = f" | Score: {rf.get('risk_score')}/100" if rf.get("risk_score") is not None else " | Unscored"
+        loc_label = _format_loc(rf)
         story.append(
             Paragraph(
                 f"<b>{_safe(rf.get('clause_id'))} — {_safe(rf.get('risk_title'))}</b> "
-                f"[{level.upper()} | Score: {rf.get('risk_score')}/100 | Page {rf.get('page_number')} | {verified_tag}]",
+                f"[{level}{score_part} | {loc_label} | {verified_tag}]",
                 body_style,
             )
         )

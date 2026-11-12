@@ -5,6 +5,8 @@ import streamlit as st
 
 
 RISK_COLORS = {
+    "no_notable_risk": "#475569",
+    "uncertain": "#7C3AED",
     "low": "#16A34A",
     "medium": "#CA8A04",
     "high": "#EA580C",
@@ -13,10 +15,18 @@ RISK_COLORS = {
 
 
 def risk_badge_html(level: str) -> str:
-    norm = (level or "low").lower()
+    norm = (level or "no_notable_risk").lower()
     if norm not in RISK_COLORS:
-        norm = "low"
-    return f'<span class="le-badge le-badge-{norm}">{norm.upper()}</span>'
+        norm = "no_notable_risk"
+    label = norm.replace("_", " ").upper()
+    return f'<span class="le-badge le-badge-{norm}">{label}</span>'
+
+
+def format_location_label(item: dict) -> str:
+    if item.get("location_type") == "docx_paragraph" or item.get("page_number") is None:
+        pidx = item.get("paragraph_index")
+        return f"DOCX Para {pidx}" if pidx else "DOCX"
+    return f"Page {item.get('page_number')}"
 
 
 def render_kpi_card(label: str, value: str | int | float, subtitle: str = "", accent: str = "#0F2744") -> None:
@@ -36,15 +46,16 @@ def render_kpi_card(label: str, value: str | int | float, subtitle: str = "", ac
 
 
 def render_risk_finding_card(finding: dict, index: int) -> None:
-    level = str(finding.get("risk_level", "low")).lower()
-    score = finding.get("risk_score", 0)
+    level = str(finding.get("risk_level", "no_notable_risk")).lower()
+    score = finding.get("risk_score")
     clause_id = finding.get("clause_id", "")
     title = finding.get("risk_title") or finding.get("clause_title") or clause_id
-    page_no = finding.get("page_number", 1)
+    loc_label = format_location_label(finding)
     verified = finding.get("verified", True)
     finding_type = finding.get("finding_type", "detected_risk")
 
     badge = risk_badge_html(level)
+    score_html = f"{score}/100" if score is not None else "Unscored"
     ver_label = "Verified Evidence" if verified else "Unverified — Review Required"
     ver_color = "#15803D" if verified else "#B91C1C"
 
@@ -58,12 +69,12 @@ def render_risk_finding_card(finding: dict, index: int) -> None:
                 </div>
                 <div>
                     {badge}
-                    <span style="margin-left:0.5rem; font-weight:700; color:#0F2744;">{score}/100</span>
-                    <span style="margin-left:0.5rem; font-size:0.82rem; color:#475569;">Page {page_no}</span>
+                    <span style="margin-left:0.5rem; font-weight:700; color:#0F2744;">{score_html}</span>
+                    <span style="margin-left:0.5rem; font-size:0.82rem; color:#475569;">{html.escape(loc_label)}</span>
                 </div>
             </div>
             <div style="margin-top:0.45rem; font-size:0.8rem; color:{ver_color}; font-weight:600;">
-                {html.escape(ver_label)} &bull; Type: {html.escape(str(finding_type).replace('_', ' ').title())}
+                {html.escape(ver_label)} &bull; Screening Result: {html.escape(str(finding_type).replace('_', ' ').title())}
             </div>
             <p style="margin:0.55rem 0 0.35rem 0; color:#1E293B;"><strong>Explanation:</strong> {html.escape(str(finding.get('explanation', '')))}</p>
             <p style="margin:0.2rem 0; color:#334155;"><strong>Potential Impact:</strong> {html.escape(str(finding.get('potential_impact', '')))}</p>
@@ -73,7 +84,7 @@ def render_risk_finding_card(finding: dict, index: int) -> None:
         unsafe_allow_html=True,
     )
 
-    with st.expander(f"View complete original clause text ({clause_id}, Page {page_no})"):
+    with st.expander(f"View complete original clause text ({clause_id}, {loc_label})"):
         st.text_area(
             f"Original Clause {clause_id}",
             value=finding.get("original_clause", ""),

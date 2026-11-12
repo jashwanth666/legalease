@@ -16,6 +16,7 @@ from backend.database import (
     RiskAssessment,
     get_db,
 )
+from backend.guardrails.document_guard import DocumentValidationError, resolve_contained_path
 from backend.services.pdf_service import generate_analysis_pdf
 from backend.services.scoring_service import classify_risk_level
 
@@ -24,26 +25,37 @@ router = APIRouter(prefix="/api", tags=["Reports"])
 
 
 @router.get("/reports")
-def list_reports(db: Session = Depends(get_db)):
+def list_reports(
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
     """List generated analysis reports ordered newest first."""
     reports = (
         db.query(AnalysisReport, Document)
         .join(Document, AnalysisReport.document_id == Document.document_id)
+        .filter(Document.processing_status == "analyzed")
         .order_by(AnalysisReport.created_at.desc())
         .all()
     )
-    return [
-        {
-            "document_id": doc.document_id,
-            "filename": doc.filename,
-            "detected_contract_type": doc.detected_contract_type,
-            "overall_risk_score": doc.overall_risk_score,
-            "overall_risk_level": doc.overall_risk_level,
-            "report_exists": Path(rep.report_path).exists(),
-            "created_at": rep.created_at,
-        }
-        for rep, doc in reports
-    ]
+    items = []
+    for rep, doc in reports:
+        try:
+            contained = resolve_contained_path(settings.reports_dir, Path(rep.report_path))
+            exists = contained.exists()
+        except DocumentValidationError:
+            exists = False
+        items.append(
+            {
+                "document_id": doc.document_id,
+                "filename": doc.filename,
+                "detected_contract_type": doc.detected_contract_type,
+                "overall_risk_score": doc.overall_risk_score,
+                "overall_risk_level": doc.overall_risk_level,
+                "report_exists": exists,
+                "created_at": rep.created_at,
+            }
+        )
+    return items
 
 
 @router.get("/report/{document_id}")
@@ -72,14 +84,15 @@ def download_report(
         .order_by(AnalysisReport.created_at.desc())
         .first()
     )
-    report_path = (
-        Path(report_row.report_path)
-        if report_row
-        else settings.reports_dir / f"LegalEase_Report_{document_id}.pdf"
-    )
+    default_report_path = settings.reports_dir / f"LegalEase_Report_{document_id}.pdf"
+    candidate_path = Path(report_row.report_path) if report_row else default_report_path
+    try:
+        report_path = resolve_contained_path(settings.reports_dir, candidate_path)
+    except DocumentValidationError:
+        report_path = resolve_contained_path(settings.reports_dir, default_report_path)
 
     if not report_path.exists():
-        # Regenerate cleanly from SQLite state if file was cleaned up
+        # Regenerate cleanly inside managed reports directory from SQLite state
         clauses = (
             db.query(Clause)
             .filter(Clause.document_id == document_id)
@@ -98,14 +111,22 @@ def download_report(
             .order_by(Comparison.clause_id.asc())
             .all()
         )
-        counts = {"low": 0, "medium": 0, "high": 0, "critical": 0}
+        counts = {"no_notable_risk": 0, "uncertain": 0, "low": 0, "medium": 0, "high": 0, "critical": 0}
+        scored_count = 0
         for r in risks:
             counts[r.risk_level] = counts.get(r.risk_level, 0) + 1
+            if r.risk_score is not None:
+                scored_count += 1
         overall_score = doc.overall_risk_score or 0.0
         overview = {
             "overall_risk_score": overall_score,
-            "overall_risk_level": doc.overall_risk_level or classify_risk_level(overall_score),
+            "overall_risk_level": doc.overall_risk_level or (
+                "no_notable_risk" if scored_count == 0 else classify_risk_level(overall_score)
+            ),
             "total_clauses": len(clauses),
+            "scored_clauses_count": scored_count,
+            "no_notable_risk_count": counts["no_notable_risk"],
+            "uncertain_count": counts["uncertain"],
             "low_count": counts["low"],
             "medium_count": counts["medium"],
             "high_count": counts["high"],
@@ -123,6 +144,9 @@ def download_report(
                 "page_count": doc.page_count,
                 "detected_contract_type": doc.detected_contract_type,
                 "analysis_mode": doc.analysis_mode or "deterministic_fallback",
+                "gemini_status": doc.gemini_status,
+                "fallback_reason": doc.fallback_reason,
+                "embedding_backend": doc.embedding_backend,
             },
             overview=overview,
             executive_summary=doc.executive_summary or "",
@@ -130,6 +154,10 @@ def download_report(
                 {
                     "clause_id": c.clause_id,
                     "page_number": c.page_number,
+                    "end_page_number": c.end_page_number,
+                    "location_type": c.location_type,
+                    "paragraph_index": c.paragraph_index,
+                    "section_title": c.section_title,
                     "category": c.category,
                     "title": c.title,
                     "description": c.description,
@@ -147,6 +175,10 @@ def download_report(
                     "potential_impact": r.potential_impact,
                     "suggested_action": r.suggested_action,
                     "page_number": r.page_number,
+                    "location_type": r.location_type,
+                    "paragraph_index": r.paragraph_index,
+                    "section_title": r.section_title,
+                    "finding_type": r.finding_type,
                     "verified": r.verified,
                 }
                 for r in risks

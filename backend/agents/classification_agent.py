@@ -12,7 +12,12 @@ from backend.schemas.clause import (
     ExtractedClause,
     GeminiBatchClassification,
 )
-from backend.services.llm_service import LLMService, LLMUnavailableError
+from backend.services.llm_service import (
+    LLMInvocationError,
+    LLMService,
+    LLMUnavailableError,
+    classify_llm_exception,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -64,6 +69,11 @@ class ClassificationAgent:
     def __init__(self, llm_service: LLMService | None = None, batch_size: int = 8) -> None:
         self.llm_service = llm_service or LLMService()
         self.batch_size = batch_size
+        self.last_run_meta: dict[str, object] = {
+            "gemini_status": "ok" if self.llm_service.is_available else "missing_key",
+            "fallback_used": False,
+            "fallback_reason": None,
+        }
 
     def classify_clauses(
         self, clauses: Iterable[ExtractedClause]
@@ -71,44 +81,76 @@ class ClassificationAgent:
         """Classify clauses and return (classifications, analysis_mode)."""
         clause_list = list(clauses)
         if not clause_list:
-            return [], "gemini" if self.llm_service.is_available else "deterministic_fallback"
+            available = self.llm_service.is_available
+            self.last_run_meta = {
+                "gemini_status": "ok" if available else "missing_key",
+                "fallback_used": not available,
+                "fallback_reason": None if available else "Gemini API key is not configured.",
+            }
+            return [], "gemini" if available else "deterministic_fallback"
 
         if not self.llm_service.is_available:
-            return self._fallback_batch(clause_list, source="deterministic_fallback"), "deterministic_fallback"
+            self.last_run_meta = {
+                "gemini_status": "missing_key",
+                "fallback_used": True,
+                "fallback_reason": "Gemini API key is not configured.",
+            }
+            return self._fallback_batch(clause_list, source="ai_unavailable"), "deterministic_fallback"
 
         results: list[ClauseClassification] = []
         used_gemini = False
         used_fallback = False
+        last_status = "ok"
+        reasons: list[str] = []
 
         for start in range(0, len(clause_list), self.batch_size):
             batch = clause_list[start : start + self.batch_size]
             try:
-                batch_results = self._classify_batch_with_gemini(batch)
+                batch_results, batch_partial = self._classify_batch_with_gemini(batch)
                 results.extend(batch_results)
                 used_gemini = True
-            except LLMUnavailableError:
-                results.extend(self._fallback_batch(batch, source="ai_unavailable"))
+                if batch_partial:
+                    used_fallback = True
+                    last_status = "malformed_output"
+                    reasons.append("Gemini omitted one or more clause IDs in classification batch.")
+            except (LLMUnavailableError, LLMInvocationError) as exc:
+                last_status, reason = exc.status_label, exc.reason
+                reasons.append(reason)
+                source = "ai_unavailable" if last_status in {"missing_key", "dependency_missing"} else "deterministic_fallback"
+                results.extend(self._fallback_batch(batch, source=source))
                 used_fallback = True
             except Exception as exc:
-                logger.warning("Gemini classification batch failed (%s); using fallback", type(exc).__name__)
+                last_status, reason = classify_llm_exception(exc)
+                reasons.append(reason)
+                logger.warning("Gemini classification batch failed (%s); using fallback", last_status)
                 results.extend(self._fallback_batch(batch, source="deterministic_fallback"))
                 used_fallback = True
 
         mode = "gemini" if (used_gemini and not used_fallback) else (
             "hybrid_fallback" if used_gemini else "deterministic_fallback"
         )
+        self.last_run_meta = {
+            "gemini_status": last_status if used_fallback else "ok",
+            "fallback_used": used_fallback,
+            "fallback_reason": "; ".join(dict.fromkeys(reasons)) if reasons else None,
+        }
         return results, mode
 
     def _classify_batch_with_gemini(
         self, batch: list[ExtractedClause]
-    ) -> list[ClauseClassification]:
+    ) -> tuple[list[ClauseClassification], bool]:
         formatted_clauses = []
         for clause in batch:
             fenced = wrap_untrusted_contract_text(clause.original_text)
+            loc = (
+                f"Page: {clause.page_number}"
+                if clause.page_number is not None
+                else f"DOCX Paragraph: {clause.paragraph_index or 1}"
+            )
             formatted_clauses.append(
                 f"Clause ID: {clause.clause_id}\n"
                 f"Heading: {clause.title}\n"
-                f"Page: {clause.page_number}\n"
+                f"{loc}\n"
                 f"{fenced}"
             )
         user_prompt = (
@@ -124,10 +166,12 @@ class ClassificationAgent:
 
         by_id = {item.clause_id: item for item in parsed.classifications}
         validated: list[ClauseClassification] = []
+        partial_fallback = False
         for clause in batch:
             item = by_id.get(clause.clause_id)
             if item is None:
                 validated.append(self._fallback_single(clause, source="deterministic_fallback"))
+                partial_fallback = True
                 continue
             category, was_mapped_other = _normalize_category(item.category)
             uncertain = was_mapped_other or item.confidence < 0.6
@@ -141,7 +185,7 @@ class ClassificationAgent:
                     uncertain=uncertain,
                 )
             )
-        return validated
+        return validated, partial_fallback
 
     def _fallback_batch(
         self, batch: list[ExtractedClause], source: str

@@ -9,7 +9,12 @@ from pydantic import BaseModel, Field
 from backend.guardrails.document_guard import wrap_untrusted_contract_text
 from backend.retrieval.retriever import TemplateRetriever
 from backend.schemas.clause import ClauseClassification, ExtractedClause
-from backend.services.llm_service import LLMService, LLMUnavailableError
+from backend.services.llm_service import (
+    LLMInvocationError,
+    LLMService,
+    LLMUnavailableError,
+    classify_llm_exception,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -36,7 +41,10 @@ class ClauseComparisonResult(BaseModel):
     clause_id: str
     clause_title: str
     category: str
-    page_number: int
+    page_number: int | None = None
+    location_type: str = "pdf_page"
+    paragraph_index: int | None = None
+    section_title: str | None = None
     uploaded_clause: str
     reference_clause: str
     differences: list[str]
@@ -60,6 +68,13 @@ class ComparisonAgent:
     ) -> None:
         self.retriever = retriever or TemplateRetriever()
         self.llm_service = llm_service or LLMService()
+        self.last_run_meta: dict[str, object] = {
+            "gemini_status": "ok" if self.llm_service.is_available else "missing_key",
+            "fallback_used": False,
+            "fallback_reason": None,
+            "embedding_backend": self.retriever.store.embedding_service.backend_name,
+            "embedding_label": self.retriever.store.embedding_service.embedding_label,
+        }
 
     def compare_clauses(
         self,
@@ -73,6 +88,8 @@ class ComparisonAgent:
         comparisons: list[ClauseComparisonResult] = []
         used_gemini = False
         used_fallback = False
+        last_status = "ok" if self.llm_service.is_available else "missing_key"
+        reasons: list[str] = [] if self.llm_service.is_available else ["Gemini API key is not configured."]
 
         for clause in clause_list:
             cls = class_map.get(clause.clause_id)
@@ -88,22 +105,37 @@ class ComparisonAgent:
                 continue
 
             best = matches[0]
+            fallback_src = "ai_unavailable"
+            fallback_reason = "Gemini API key is not configured."
             if self.llm_service.is_available:
                 try:
                     comp = self._compare_with_gemini(clause, category, best)
                     comparisons.append(comp)
                     used_gemini = True
                     continue
-                except LLMUnavailableError:
-                    pass
+                except (LLMUnavailableError, LLMInvocationError) as exc:
+                    last_status, fallback_reason = exc.status_label, exc.reason
+                    reasons.append(fallback_reason)
+                    fallback_src = "ai_unavailable" if last_status in {"missing_key", "dependency_missing"} else "deterministic_fallback"
                 except Exception as exc:
+                    last_status, fallback_reason = classify_llm_exception(exc)
+                    reasons.append(fallback_reason)
+                    fallback_src = "deterministic_fallback"
                     logger.warning(
                         "Gemini comparison failed for %s (%s); using deterministic fallback",
                         clause.clause_id,
-                        type(exc).__name__,
+                        last_status,
                     )
 
-            comparisons.append(self._compare_deterministic(clause, category, best))
+            comparisons.append(
+                self._compare_deterministic(
+                    clause,
+                    category,
+                    best,
+                    analysis_source=fallback_src,
+                    fallback_reason=fallback_reason,
+                )
+            )
             used_fallback = True
 
         mode = (
@@ -111,6 +143,13 @@ class ComparisonAgent:
             if (used_gemini and not used_fallback)
             else ("hybrid_fallback" if used_gemini else "deterministic_fallback")
         )
+        self.last_run_meta = {
+            "gemini_status": last_status if used_fallback else "ok",
+            "fallback_used": used_fallback,
+            "fallback_reason": "; ".join(dict.fromkeys(reasons)) if (used_fallback and reasons) else None,
+            "embedding_backend": self.retriever.store.embedding_service.backend_name,
+            "embedding_label": self.retriever.store.embedding_service.embedding_label,
+        }
         return comparisons, retrieved_map, mode
 
     def _compare_with_gemini(
@@ -133,6 +172,9 @@ class ComparisonAgent:
             clause_title=clause.title,
             category=category,
             page_number=clause.page_number,
+            location_type=clause.location_type,
+            paragraph_index=clause.paragraph_index,
+            section_title=clause.section_title,
             uploaded_clause=clause.original_text,
             reference_clause=reference["text"],
             differences=parsed.differences or ["Differences reviewed against illustrative reference."],
@@ -150,7 +192,11 @@ class ComparisonAgent:
 
     @staticmethod
     def _compare_deterministic(
-        clause: ExtractedClause, category: str, reference: dict[str, Any]
+        clause: ExtractedClause,
+        category: str,
+        reference: dict[str, Any],
+        analysis_source: str = "deterministic_fallback",
+        fallback_reason: str | None = None,
     ) -> ClauseComparisonResult:
         up_l = clause.original_text.lower()
         ref_l = reference["text"].lower()
@@ -198,16 +244,20 @@ class ComparisonAgent:
             else:
                 differences.append("Clause phrasing substantially aligns with the illustrative reference structure.")
 
+        reason_label = fallback_reason or "Gemini AI unavailable"
         return ClauseComparisonResult(
             clause_id=clause.clause_id,
             clause_title=clause.title,
             category=category,
             page_number=clause.page_number,
+            location_type=clause.location_type,
+            paragraph_index=clause.paragraph_index,
+            section_title=clause.section_title,
             uploaded_clause=clause.original_text,
             reference_clause=reference["text"],
             differences=differences,
             potential_implications=(
-                "[Deterministic comparison — Gemini unavailable] Deviations from balanced commercial baselines "
+                f"[Deterministic comparison — {reason_label}] Deviations from balanced commercial baselines "
                 "may shift risk, notice deadlines, or financial exposure onto your organization."
             ),
             recommendation=(
@@ -221,6 +271,6 @@ class ComparisonAgent:
                 "illustrative_notice",
                 "Illustrative reference example only, not a universally applicable legal standard.",
             ),
-            analysis_source="deterministic_fallback",
+            analysis_source=analysis_source,
         )
 

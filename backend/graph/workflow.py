@@ -40,6 +40,24 @@ def _route_after_splitting(state: LegalEaseState) -> str:
     return "continue"
 
 
+def _route_after_classification(state: LegalEaseState) -> list[str]:
+    if state.get("processing_errors"):
+        return [END]
+    return ["risk_assessment", "rag_template_comparison", "missing_clause_detection"]
+
+
+def _route_after_errors(state: LegalEaseState) -> str:
+    if state.get("processing_errors"):
+        return "stop"
+    return "continue"
+
+
+def _route_after_save(state: LegalEaseState) -> str:
+    if state.get("processing_errors") or not state.get("db_saved"):
+        return "stop"
+    return "continue"
+
+
 def build_legalease_workflow():
     """Compile the full LegalEase LangGraph StateGraph with parallel assessment branches."""
     graph = StateGraph(LegalEaseState)
@@ -77,21 +95,39 @@ def build_legalease_workflow():
         {"continue": "classify_clauses", "stop": END},
     )
 
-    # Parallel fan-out from clause classification
-    graph.add_edge("classify_clauses", "risk_assessment")
-    graph.add_edge("classify_clauses", "rag_template_comparison")
-    graph.add_edge("classify_clauses", "missing_clause_detection")
+    # Conditional parallel fan-out from clause classification
+    graph.add_conditional_edges("classify_clauses", _route_after_classification)
 
     # Fan-in to merge_results
     graph.add_edge("risk_assessment", "merge_results")
     graph.add_edge("rag_template_comparison", "merge_results")
     graph.add_edge("missing_clause_detection", "merge_results")
 
-    graph.add_edge("merge_results", "verify_evidence")
-    graph.add_edge("verify_evidence", "generate_summary")
-    graph.add_edge("generate_summary", "calculate_overview")
-    graph.add_edge("calculate_overview", "save_results")
-    graph.add_edge("save_results", "generate_pdf")
+    graph.add_conditional_edges(
+        "merge_results",
+        _route_after_errors,
+        {"continue": "verify_evidence", "stop": END},
+    )
+    graph.add_conditional_edges(
+        "verify_evidence",
+        _route_after_errors,
+        {"continue": "generate_summary", "stop": END},
+    )
+    graph.add_conditional_edges(
+        "generate_summary",
+        _route_after_errors,
+        {"continue": "calculate_overview", "stop": END},
+    )
+    graph.add_conditional_edges(
+        "calculate_overview",
+        _route_after_errors,
+        {"continue": "save_results", "stop": END},
+    )
+    graph.add_conditional_edges(
+        "save_results",
+        _route_after_save,
+        {"continue": "generate_pdf", "stop": END},
+    )
     graph.add_edge("generate_pdf", END)
 
     return graph.compile()
@@ -112,6 +148,9 @@ def run_contract_analysis(
         "file_path": file_path,
         "file_type": file_type,
         "processing_errors": [],
+        "llm_telemetry": [],
+        "db_saved": False,
+        "pdf_generated": False,
         "runtime_config": runtime_config or {},
     }
     return workflow.invoke(initial_state)

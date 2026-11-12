@@ -47,10 +47,17 @@ if st.button("Rebuild FAISS Reference Index", type="primary"):
     with st.spinner("Indexing reference templates..."):
         try:
             res = client.rebuild_templates()
+            is_sem = res.get("is_semantic_embeddings", False)
+            emb_desc = res.get("embedding_label") or res.get("embedding_backend")
             st.success(
                 f"Rebuilt FAISS index with **{res['indexed_clauses']}** reference clauses "
-                f"(embedding backend: `{res['embedding_backend']}`)."
+                f"(embedding backend: `{emb_desc}`, dim: {res.get('embedding_dimension', 384)})."
             )
+            if not is_sem:
+                st.info(
+                    "Using deterministic hash embeddings because the SentenceTransformers model cache "
+                    "is not present offline. Download `all-MiniLM-L6-v2` locally for true semantic retrieval."
+                )
         except APIError as exc:
             st.error(exc.message)
 

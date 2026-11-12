@@ -4,6 +4,13 @@ import html
 import streamlit as st
 
 
+def _loc_text(item: dict) -> str:
+    if item.get("location_type") == "docx_paragraph" or item.get("page_number") is None:
+        pidx = item.get("paragraph_index")
+        return f"DOCX Para {pidx}" if pidx else "DOCX"
+    return f"Page {item.get('page_number')}"
+
+
 def render_clause_viewer(clauses: list[dict]) -> None:
     """Display filterable table and expandable full original text for extracted clauses."""
     if not clauses:
@@ -33,12 +40,15 @@ def render_clause_viewer(clauses: list[dict]) -> None:
         source = cl.get("classification_source", "deterministic_fallback")
         conf = cl.get("confidence")
         conf_txt = f"{int(round(conf * 100))}%" if isinstance(conf, (int, float)) else "N/A"
+        loc_txt = _loc_text(cl)
+        seg_conf = cl.get("segmentation_confidence", "high")
+        seg_flag = " • Uncertain Split" if cl.get("segmentation_uncertain") else ""
         header = (
             f"{cl.get('clause_id')} | {cl.get('title')} "
-            f"[{cl.get('category')} • Page {cl.get('page_number')} • Confidence {conf_txt}]"
+            f"[{cl.get('category')} • {loc_txt} • Confidence {conf_txt}{seg_flag}]"
         )
         with st.expander(header, expanded=(idx < 2)):
-            st.markdown(f"**Classification Source:** `{source}`")
+            st.markdown(f"**Classification Source:** `{source}` | **Segmentation Confidence:** `{seg_conf}`")
             if cl.get("description"):
                 st.markdown(f"**Summary:** {cl['description']}")
             st.markdown("**Complete Original Clause Text:**")
@@ -50,7 +60,7 @@ def render_side_by_side_comparison(comp: dict, idx: int) -> None:
     cid = comp.get("clause_id", "")
     title = comp.get("clause_title", cid)
     cat = comp.get("category", "Other")
-    page_no = comp.get("page_number", 1)
+    loc_txt = _loc_text(comp)
     sim = comp.get("similarity_score")
     sim_txt = f"{sim:.2f}" if isinstance(sim, (int, float)) else "N/A"
     verified_txt = "Verified" if comp.get("verified", True) else "Unverified"
@@ -59,7 +69,7 @@ def render_side_by_side_comparison(comp: dict, idx: int) -> None:
         f"""
         <div class="le-card">
             <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:0.5rem;">
-                <div><strong>{html.escape(str(cid))}</strong> &mdash; {html.escape(str(title))} ({html.escape(str(cat))}, Page {page_no})</div>
+                <div><strong>{html.escape(str(cid))}</strong> &mdash; {html.escape(str(title))} ({html.escape(str(cat))}, {html.escape(loc_txt)})</div>
                 <div style="font-size:0.83rem; color:#475569;">
                     Reference: <strong>{html.escape(str(comp.get('reference_source', '')))}</strong>
                     &bull; Similarity: <strong>{sim_txt}</strong> &bull; {verified_txt}

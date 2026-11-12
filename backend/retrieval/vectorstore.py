@@ -1,6 +1,7 @@
 """FAISS vector store management for reference legal clauses."""
 
 from dataclasses import asdict
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,9 @@ import numpy as np
 
 from backend.ingestion.template_loader import ReferenceClause, load_reference_clauses
 from backend.retrieval.embeddings import EmbeddingService
+
+
+TEMPLATE_VERSION = "v1"
 
 
 class ReferenceVectorStore:
@@ -28,15 +32,35 @@ class ReferenceVectorStore:
         self.meta_path = self.vectorstore_dir / "reference_clauses.json"
         self.index: faiss.IndexFlatIP | None = None
         self.records: list[dict[str, Any]] = []
+        self.metadata: dict[str, Any] = {}
+
+    def _compute_templates_hash(self) -> str:
+        """Compute deterministic SHA-256 over all template files in templates_dir."""
+        digest = hashlib.sha256()
+        if not self.templates_dir.exists():
+            return digest.hexdigest()
+        files = sorted(
+            p for p in self.templates_dir.rglob("*")
+            if p.is_file() and p.suffix.lower() in {".txt", ".md"}
+        )
+        for path in files:
+            rel = path.relative_to(self.templates_dir).as_posix()
+            digest.update(rel.encode("utf-8"))
+            digest.update(b"\x00")
+            digest.update(path.read_bytes())
+            digest.update(b"\x00")
+        return digest.hexdigest()
 
     def build_index(self) -> int:
         """Load reference templates, embed clauses, and build + persist FAISS index."""
         clauses: list[ReferenceClause] = load_reference_clauses(self.templates_dir)
         self.vectorstore_dir.mkdir(parents=True, exist_ok=True)
+        template_hash = self._compute_templates_hash()
 
         if not clauses:
             self.index = None
             self.records = []
+            self.metadata = {}
             return 0
 
         texts = [
@@ -46,19 +70,28 @@ class ReferenceVectorStore:
         vectors = np.array(self.embedding_service.embed_documents(texts), dtype=np.float32)
         faiss.normalize_L2(vectors)
 
-        dim = vectors.shape[1]
+        dim = int(vectors.shape[1])
         index = faiss.IndexFlatIP(dim)
         index.add(vectors)
 
         self.index = index
         self.records = [asdict(c) for c in clauses]
+        self.metadata = {
+            "embedding_backend": self.embedding_service.backend_name,
+            "embedding_model": self.embedding_service.model_name,
+            "embedding_dimension": dim,
+            "is_semantic_embeddings": self.embedding_service.is_semantic,
+            "embedding_label": self.embedding_service.embedding_label,
+            "template_version": TEMPLATE_VERSION,
+            "template_hash": template_hash,
+            "count": len(self.records),
+        }
 
         faiss.write_index(self.index, str(self.index_path))
         self.meta_path.write_text(
             json.dumps(
                 {
-                    "embedding_backend": self.embedding_service.backend_name,
-                    "count": len(self.records),
+                    **self.metadata,
                     "records": self.records,
                 },
                 indent=2,
@@ -69,16 +102,41 @@ class ReferenceVectorStore:
         return len(self.records)
 
     def ensure_loaded(self) -> None:
-        """Load existing FAISS index from disk or build it from templates if missing."""
-        if self.index is not None and self.records:
+        """Load existing FAISS index if valid and fresh, else rebuild from templates."""
+        current_hash = self._compute_templates_hash()
+        current_backend = self.embedding_service.backend_name
+        current_model = self.embedding_service.model_name
+        current_dim = self.embedding_service.embedding_dimension
+
+        if (
+            self.index is not None
+            and self.records
+            and self.metadata.get("template_hash") == current_hash
+            and self.metadata.get("embedding_backend") == current_backend
+            and self.metadata.get("embedding_model") == current_model
+            and self.metadata.get("embedding_dimension") == current_dim
+        ):
             return
 
         if self.index_path.exists() and self.meta_path.exists():
-            meta = json.loads(self.meta_path.read_text(encoding="utf-8"))
-            if meta.get("embedding_backend") == self.embedding_service.backend_name:
-                self.index = faiss.read_index(str(self.index_path))
-                self.records = meta.get("records", [])
-                return
+            try:
+                meta = json.loads(self.meta_path.read_text(encoding="utf-8"))
+                matches_meta = (
+                    meta.get("embedding_backend") == current_backend
+                    and meta.get("embedding_model") == current_model
+                    and meta.get("embedding_dimension") == current_dim
+                    and meta.get("template_version") == TEMPLATE_VERSION
+                    and meta.get("template_hash") == current_hash
+                )
+                if matches_meta:
+                    loaded_index = faiss.read_index(str(self.index_path))
+                    if int(loaded_index.d) == current_dim and loaded_index.ntotal == len(meta.get("records", [])):
+                        self.index = loaded_index
+                        self.records = meta.get("records", [])
+                        self.metadata = {k: v for k, v in meta.items() if k != "records"}
+                        return
+            except Exception:
+                pass
 
         self.build_index()
 
@@ -90,12 +148,18 @@ class ReferenceVectorStore:
         category: str | None = None,
         min_similarity: float = 0.05,
     ) -> list[dict[str, Any]]:
-        """Retrieve top-k semantically similar reference clauses with metadata filtering."""
+        """Retrieve top-k similar reference clauses with metadata filtering."""
         self.ensure_loaded()
         if self.index is None or not self.records:
             return []
 
         query_vec = np.array([self.embedding_service.embed_query(query)], dtype=np.float32)
+        if int(query_vec.shape[1]) != int(self.index.d):
+            self.build_index()
+            if self.index is None or not self.records:
+                return []
+            query_vec = np.array([self.embedding_service.embed_query(query)], dtype=np.float32)
+
         faiss.normalize_L2(query_vec)
 
         search_k = min(len(self.records), max(top_k * 5, 15))

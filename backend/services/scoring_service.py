@@ -56,33 +56,64 @@ def calculate_clause_risk_score(factors: RiskFactorInputs) -> tuple[float, RiskL
 
 
 def calculate_overall_risk_overview(findings: Iterable[RiskFinding]) -> RiskOverview:
-    """Compute contract-level illustrative risk overview from verified/detected clause findings."""
+    """Compute contract-level illustrative risk overview separating detected risk from unflagged clauses."""
     items = list(findings)
     if not items:
         return RiskOverview(
             overall_risk_score=0.0,
-            overall_risk_level="low",
+            overall_risk_level="no_notable_risk",
             total_clauses=0,
         )
 
-    counts = {"low": 0, "medium": 0, "high": 0, "critical": 0}
-    scores: list[float] = []
+    counts = {
+        "no_notable_risk": 0,
+        "uncertain": 0,
+        "low": 0,
+        "medium": 0,
+        "high": 0,
+        "critical": 0,
+    }
+    detected_scores: list[float] = []
+
     for item in items:
-        counts[item.risk_level] = counts.get(item.risk_level, 0) + 1
-        scores.append(float(item.risk_score))
+        if item.finding_type in ("uncertain_finding", "missing_information"):
+            counts["uncertain"] += 1
+        elif item.finding_type == "no_notable_risk" or item.risk_score is None:
+            counts["no_notable_risk"] += 1
+        else:
+            lvl = item.risk_level if item.risk_level in ("low", "medium", "high", "critical") else classify_risk_level(item.risk_score)
+            counts[lvl] += 1
+            detected_scores.append(float(item.risk_score))
 
-    avg_score = sum(scores) / len(scores)
-    top_scores = sorted(scores, reverse=True)[: min(3, len(scores))]
-    top_avg = sum(top_scores) / len(top_scores)
+    if not detected_scores:
+        return RiskOverview(
+            overall_risk_score=0.0,
+            overall_risk_level="no_notable_risk",
+            total_clauses=len(items),
+            scored_clauses_count=0,
+            no_notable_risk_count=counts["no_notable_risk"],
+            uncertain_count=counts["uncertain"],
+            low_count=counts["low"],
+            medium_count=counts["medium"],
+            high_count=counts["high"],
+            critical_count=counts["critical"],
+        )
 
-    # Blend average clause exposure (60%) with peak top-3 clause exposure (40%)
-    overall = round(clamp_score(0.60 * avg_score + 0.40 * top_avg), 1)
+    # Blend top-3 peak detected risks (55%) with contract-wide flagged risk density across all clauses (45%)
+    top_scores = sorted(detected_scores, reverse=True)[: min(3, len(detected_scores))]
+    peak_avg = sum(top_scores) / len(top_scores)
+    contract_density = sum(detected_scores) / len(items)
+
+    overall = round(clamp_score(0.55 * peak_avg + 0.45 * contract_density), 1)
     overall_level = classify_risk_level(overall)
 
     return RiskOverview(
         overall_risk_score=overall,
         overall_risk_level=overall_level,
         total_clauses=len(items),
+        scored_clauses_count=len(detected_scores),
+        no_notable_risk_count=counts["no_notable_risk"],
+        uncertain_count=counts["uncertain"],
         low_count=counts["low"],
         medium_count=counts["medium"],
         high_count=counts["high"],

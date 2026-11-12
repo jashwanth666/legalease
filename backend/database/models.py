@@ -41,6 +41,11 @@ class Document(Base):
     executive_summary = Column(Text, nullable=True)
     missing_clauses_json = Column(Text, nullable=True)
     analysis_mode = Column(String(32), nullable=True)
+    gemini_status = Column(String(32), nullable=True)
+    fallback_used = Column(Boolean, default=False, nullable=False)
+    fallback_reason = Column(Text, nullable=True)
+    last_error = Column(Text, nullable=True)
+    embedding_backend = Column(String(64), nullable=True)
 
     clauses = relationship(
         "Clause", back_populates="document", cascade="all, delete-orphan"
@@ -73,7 +78,13 @@ class Clause(Base):
     confidence = Column(Float, nullable=True)
     classification_source = Column(String(32), nullable=True)
     original_text = Column(Text, nullable=False)
-    page_number = Column(Integer, nullable=False, default=1)
+    page_number = Column(Integer, nullable=True)
+    end_page_number = Column(Integer, nullable=True)
+    location_type = Column(String(32), default="pdf_page", nullable=False)
+    paragraph_index = Column(Integer, nullable=True)
+    section_title = Column(String(255), nullable=True)
+    segmentation_confidence = Column(String(16), default="high", nullable=False)
+    segmentation_uncertain = Column(Boolean, default=False, nullable=False)
 
     document = relationship("Document", back_populates="clauses")
 
@@ -90,12 +101,15 @@ class RiskAssessment(Base):
     )
     clause_id = Column(String(32), nullable=False, index=True)
     risk_level = Column(String(32), nullable=False)
-    risk_score = Column(Float, nullable=False)
+    risk_score = Column(Float, nullable=True)
     risk_title = Column(String(255), nullable=True)
     explanation = Column(Text, nullable=False)
     potential_impact = Column(Text, nullable=True)
     suggested_action = Column(Text, nullable=True)
-    page_number = Column(Integer, nullable=False, default=1)
+    page_number = Column(Integer, nullable=True)
+    location_type = Column(String(32), default="pdf_page", nullable=False)
+    paragraph_index = Column(Integer, nullable=True)
+    section_title = Column(String(255), nullable=True)
     verified = Column(Boolean, default=True, nullable=False)
     finding_type = Column(String(32), default="detected_risk", nullable=False)
 
