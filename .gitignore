@@ -1,0 +1,32 @@
+# Environment variables
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Storage & generated runtime artifacts
+storage/uploads/*
+storage/extracted/*
+storage/vectorstore/*
+storage/*.db
+storage/*.sqlite*
+outputs/reports/*
+
+# Keep folder structure tracked if needed
+!storage/uploads/.gitkeep
+!storage/extracted/.gitkeep
+!storage/vectorstore/.gitkeep
+!outputs/reports/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+

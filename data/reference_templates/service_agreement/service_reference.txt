@@ -1,0 +1,44 @@
+Contract Type: Service Agreement
+Source: service_reference.txt
+Jurisdiction: United States (General Commercial Illustrative Example)
+Illustrative Notice: This reference template is an illustrative example only, not a universally applicable legal standard.
+
+1. Definitions
+"Services" means the professional consulting and software deliverables specified in an executed Statement of Work (SOW). "Deliverables" means work product expressly identified for delivery to Client in an SOW.
+
+2. Payment Terms
+Client shall pay undisputed invoices within thirty (30) days of receipt. Disputed amounts notified in good faith before the due date may be withheld pending resolution. Fees remain fixed for the initial SOW term unless modified by mutual written change order.
+
+3. Intellectual Property
+Upon full payment of applicable fees, Client owns all custom Deliverables created specifically under the SOW. Provider retains ownership of pre-existing tools and frameworks and grants Client a non-exclusive, perpetual license to any pre-existing components embedded in the Deliverables.
+
+4. Confidentiality
+Each party shall maintain the confidentiality of the other party's non-public information using reasonable care for three (3) years following expiration or termination, and shall restrict access to personnel with a need to know.
+
+5. Data Protection
+Where Provider processes personal data on Client's behalf, Provider shall implement appropriate technical and organizational security safeguards, process data only under Client's documented instructions, and notify Client promptly without undue delay upon discovering a security breach.
+
+6. Liability
+Except for breaches of confidentiality, indemnification obligations, or willful misconduct, neither party shall be liable for indirect or consequential damages, and each party's aggregate liability is mutually capped at the total fees paid or payable under the Agreement during the twelve (12) months preceding the claim.
+
+7. Indemnification
+Each party shall mutually indemnify, defend, and hold harmless the other party from third-party claims arising from bodily injury, tangible property damage, or third-party intellectual property infringement caused by the indemnifying party's deliverables or materials, subject to prompt notice and defense control.
+
+8. Termination
+Either party may terminate for material breach if the breaching party fails to cure within thirty (30) days of written notice. Client may terminate for convenience upon thirty (30) days notice and shall receive a pro-rata refund of any prepaid, unused fees.
+
+9. Renewal
+Following the initial term, this Agreement renews only upon mutual written agreement or renews for one-year periods unless either party gives written notice of non-renewal at least thirty (30) days prior to the end of the current term.
+
+10. Warranties
+Provider warrants that Services will be performed in a professional and workmanlike manner consistent with industry standards and that Deliverables will materially conform to agreed specifications for at least ninety (90) days after delivery.
+
+11. Dispute Resolution
+The parties shall escalate disputes to senior representatives for good-faith negotiation for twenty (20) days before pursuing mediation or litigation.
+
+12. Jurisdiction
+This Agreement shall be governed by mutually agreed state law, excluding conflict-of-law principles, with venue in courts of competent jurisdiction.
+
+13. Force Majeure
+Neither party is liable for delays caused by events beyond its reasonable control, provided the affected party gives prompt written notice and uses commercially reasonable efforts to resume performance.
+

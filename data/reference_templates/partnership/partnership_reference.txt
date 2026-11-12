@@ -1,0 +1,32 @@
+Contract Type: Partnership Agreement
+Source: partnership_reference.txt
+Jurisdiction: United States (General Commercial Illustrative Example)
+Illustrative Notice: This reference template is an illustrative example only, not a universally applicable legal standard.
+
+1. Definitions
+"Partnership" means the business collaboration established under this Agreement, and "Capital Contributions" means cash, property, or services contributed by each Partner as recorded in Schedule A.
+
+2. Payment Terms
+Net profits and losses shall be allocated and distributed in proportion to each Partner's ownership percentage on a quarterly basis, following retention of agreed operating reserves.
+
+3. Intellectual Property
+Background IP contributed by a Partner remains that Partner's property unless expressly assigned, while jointly developed Partnership IP is owned by the Partnership with clear post-dissolution licensing terms.
+
+4. Confidentiality
+Partners shall keep Partnership financial, strategic, and customer information confidential during the Partnership and for three (3) years following withdrawal or dissolution.
+
+5. Termination
+A Partner may withdraw upon sixty (60) days written notice. Buyout valuation of a departing Partner's interest shall be determined by an agreed formula or independent valuation.
+
+6. Dispute Resolution
+Any deadlock or dispute among Partners shall first be submitted to good-faith negotiation and structured mediation before binding arbitration or court action.
+
+7. Jurisdiction
+This Agreement is governed by the laws of the state of formation of the Partnership.
+
+8. Indemnification
+The Partnership shall indemnify Partners acting in good faith within the scope of Partnership authority, except in cases of fraud, gross negligence, or willful misconduct.
+
+9. Force Majeure
+No Partner shall be deemed in breach due to extraordinary events outside reasonable control, provided timely notice is given to the other Partners.
+

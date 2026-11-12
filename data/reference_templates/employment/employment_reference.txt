@@ -1,0 +1,32 @@
+Contract Type: Employment Agreement
+Source: employment_reference.txt
+Jurisdiction: United States (General Commercial Illustrative Example)
+Illustrative Notice: This reference template is an illustrative example only, not a universally applicable legal standard.
+
+1. Definitions
+"Position" means the role, duties, and reporting structure set forth in the offer letter or schedule, subject to reasonable modifications consistent with Employee's qualifications.
+
+2. Payment Terms
+Employer shall pay Employee the agreed base salary in regular payroll installments subject to statutory withholdings, plus any earned bonus or expense reimbursements documented under company policy.
+
+3. Intellectual Property
+Employee assigns to Employer inventions created within the scope of employment or using Employer resources, while expressly excluding prior inventions listed on an exhibit and inventions developed entirely on Employee's own time unrelated to Employer's business.
+
+4. Confidentiality
+Employee shall protect Employer's confidential information and trade secrets during and after employment, subject to statutory whistleblower and protected disclosure rights.
+
+5. Non-Compete
+Any post-employment restrictive covenant is limited only to the extent permitted by applicable state or local law and should not unlawfully restrict Employee's ability to earn a livelihood.
+
+6. Termination
+Either party may terminate employment in accordance with notice or severance terms stated herein. Upon termination, Employer shall timely pay all accrued wages and earned benefits as required by law.
+
+7. Data Protection
+Employer shall process Employee personal records in accordance with applicable workplace privacy laws and limit access to authorized human resources and compliance personnel.
+
+8. Dispute Resolution
+Employment disputes may be resolved through internal grievance review, mediation, or courts/arbitration as permitted by applicable employment law.
+
+9. Jurisdiction
+This Agreement is governed by the laws of the jurisdiction in which Employee primarily performs work.
+

@@ -1,0 +1,141 @@
+"""SQLAlchemy ORM models for LegalEase."""
+
+from datetime import datetime, timezone
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+)
+from sqlalchemy.orm import declarative_base, relationship
+
+
+Base = declarative_base()
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class Document(Base):
+    __tablename__ = "documents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(String(32), unique=True, nullable=False, index=True)
+    filename = Column(String(255), nullable=False)
+    stored_filename = Column(String(255), nullable=False)
+    file_type = Column(String(16), nullable=False)
+    file_size = Column(Integer, nullable=False)
+    upload_date = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+    processing_status = Column(String(32), default="uploaded", nullable=False)
+
+    page_count = Column(Integer, default=0, nullable=False)
+    ocr_required = Column(Boolean, default=False, nullable=False)
+    detected_contract_type = Column(String(64), nullable=True)
+    overall_risk_score = Column(Float, nullable=True)
+    overall_risk_level = Column(String(32), nullable=True)
+    executive_summary = Column(Text, nullable=True)
+    missing_clauses_json = Column(Text, nullable=True)
+    analysis_mode = Column(String(32), nullable=True)
+
+    clauses = relationship(
+        "Clause", back_populates="document", cascade="all, delete-orphan"
+    )
+    risk_assessments = relationship(
+        "RiskAssessment", back_populates="document", cascade="all, delete-orphan"
+    )
+    comparisons = relationship(
+        "Comparison", back_populates="document", cascade="all, delete-orphan"
+    )
+    reports = relationship(
+        "AnalysisReport", back_populates="document", cascade="all, delete-orphan"
+    )
+
+
+class Clause(Base):
+    __tablename__ = "clauses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(
+        String(32),
+        ForeignKey("documents.document_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    clause_id = Column(String(32), nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    category = Column(String(64), nullable=False)
+    description = Column(Text, nullable=True)
+    confidence = Column(Float, nullable=True)
+    classification_source = Column(String(32), nullable=True)
+    original_text = Column(Text, nullable=False)
+    page_number = Column(Integer, nullable=False, default=1)
+
+    document = relationship("Document", back_populates="clauses")
+
+
+class RiskAssessment(Base):
+    __tablename__ = "risk_assessments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(
+        String(32),
+        ForeignKey("documents.document_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    clause_id = Column(String(32), nullable=False, index=True)
+    risk_level = Column(String(32), nullable=False)
+    risk_score = Column(Float, nullable=False)
+    risk_title = Column(String(255), nullable=True)
+    explanation = Column(Text, nullable=False)
+    potential_impact = Column(Text, nullable=True)
+    suggested_action = Column(Text, nullable=True)
+    page_number = Column(Integer, nullable=False, default=1)
+    verified = Column(Boolean, default=True, nullable=False)
+    finding_type = Column(String(32), default="detected_risk", nullable=False)
+
+    document = relationship("Document", back_populates="risk_assessments")
+
+
+class Comparison(Base):
+    __tablename__ = "comparisons"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(
+        String(32),
+        ForeignKey("documents.document_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    clause_id = Column(String(32), nullable=False, index=True)
+    reference_text = Column(Text, nullable=False)
+    differences = Column(Text, nullable=False)
+    potential_implications = Column(Text, nullable=True)
+    recommendation = Column(Text, nullable=True)
+    reference_source = Column(String(255), nullable=False)
+    similarity_score = Column(Float, nullable=True)
+    verified = Column(Boolean, default=True, nullable=False)
+
+    document = relationship("Document", back_populates="comparisons")
+
+
+class AnalysisReport(Base):
+    __tablename__ = "analysis_reports"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(
+        String(32),
+        ForeignKey("documents.document_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    report_path = Column(String(512), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    document = relationship("Document", back_populates="reports")
+

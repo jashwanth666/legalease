@@ -1,0 +1,26 @@
+Contract Type: NDA
+Source: nda_reference.txt
+Jurisdiction: United States (General Commercial Illustrative Example)
+Illustrative Notice: This reference template is an illustrative example only, not a universally applicable legal standard.
+
+1. Definitions
+"Confidential Information" means non-public business, technical, or financial information disclosed by one party to the other that is marked confidential or would reasonably be understood as confidential. Confidential Information excludes information that is publicly available without breach, independently developed, or lawfully obtained from a third party.
+
+2. Confidentiality
+Each Receiving Party shall protect the Disclosing Party's Confidential Information using at least the same degree of care it uses for its own confidential information, and no less than reasonable care, and shall use it solely to evaluate or perform the contemplated business relationship.
+
+3. Termination
+Either party may terminate this Agreement for convenience upon thirty (30) days prior written notice. Confidentiality obligations with respect to disclosed Confidential Information survive termination for three (3) years, or for trade secrets, so long as they remain trade secrets under applicable law.
+
+4. Non-Compete
+Standard mutual NDAs generally avoid broad non-compete restrictions and instead rely on targeted confidentiality and non-use covenants. Any non-solicitation restriction, if included, should be narrowly tailored in scope and limited to twelve (12) months.
+
+5. Dispute Resolution
+Before initiating formal proceedings, the parties shall attempt in good faith to resolve any dispute through executive negotiation within fifteen (15) business days of written notice, followed by non-binding mediation if unresolved.
+
+6. Jurisdiction
+This Agreement is governed by the laws of a mutually agreed commercial jurisdiction without regard to conflict-of-law rules, and either party may seek urgent injunctive relief in a court of competent jurisdiction for unauthorized disclosure.
+
+7. Remedies and Liability
+Each party acknowledges that unauthorized disclosure may cause irreparable harm for which monetary damages may be inadequate. Liability for breach of confidentiality should remain balanced and proportionate without waiving rights to equitable relief.
+
