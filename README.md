@@ -62,8 +62,10 @@ LegalEase helps startups, entrepreneurs, and small businesses screen contracts b
 - `POST /api/upload` — Validate, store, and extract page-referenced text from PDF/DOCX
 - `GET /api/documents` — List uploaded contracts
 - `GET /api/documents/{document_id}` — Document metadata and extracted pages
-- `POST /api/analyze/{document_id}` — Run full LangGraph analysis pipeline (user-triggered)
-- `GET /api/analysis/{document_id}` — Retrieve risk overview, findings, summary, and missing clauses
+- `POST /api/analyze/{document_id}` — Run full LangGraph analysis pipeline (user-triggered, non-blocking HTTP 202)
+- `GET /api/status/{document_id}` — Real-time pipeline processing status and percent completion
+- `GET /api/analysis/{document_id}` — Retrieve risk overview, findings, summary, metadata, and missing clauses
+- `GET /api/metadata/{document_id}` — Retrieve 16 structured contract metadata fields with verified evidence citations
 - `GET /api/clauses/{document_id}` — Retrieve segmented and classified clauses
 - `GET /api/compare/{document_id}` — Side-by-side RAG comparisons against illustrative templates
 - `GET /api/reports` & `GET /api/report/{document_id}` — List and download PDF reports

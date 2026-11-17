@@ -184,10 +184,6 @@ class MetadataAgent:
                 page_no = loc.get("page_number")
                 para_no = loc.get("paragraph_index")
 
-            verified = False
-            if quote and quote in full_text:
-                verified = True
-
             items[field] = MetadataItem(
                 field_name=field,
                 value=raw_field.value,
@@ -196,7 +192,7 @@ class MetadataAgent:
                 paragraph_index=para_no,
                 location_type="docx_paragraph" if is_docx else "pdf_page",
                 confidence=raw_field.confidence,
-                verified=verified,
+                verified=False,
                 is_uncertain=raw_field.is_uncertain,
                 is_missing=False,
                 notes=None,
@@ -353,7 +349,7 @@ class MetadataAgent:
             paragraph_index=para_no,
             location_type="docx_paragraph" if is_docx else "pdf_page",
             confidence=confidence,
-            verified=True,
+            verified=False,
             is_missing=False,
             is_uncertain=False,
         )

@@ -1,6 +1,7 @@
 """Missing clause detection, evidence verification, and executive summary agent."""
 
 import logging
+import re
 from typing import Any
 
 from backend.config import LEGAL_DISCLAIMER
@@ -206,6 +207,120 @@ class SummaryAgent:
         }
 
     @staticmethod
+    def _validate_metadata_value_support(field_name: str, value: Any, quote: str) -> tuple[bool, str | None]:
+        """Validate that the extracted metadata value is actually supported by the cited source quote."""
+        if value is None or not quote:
+            return False, "Value or source quote is missing."
+
+        quote_norm = " ".join(quote.lower().split())
+        if not quote_norm:
+            return False, "Source quote is empty."
+
+        # 1. List of values (e.g. party names)
+        if isinstance(value, list):
+            if not value:
+                return False, "Value list is empty."
+            for item in value:
+                item_str = str(item).strip()
+                if not item_str:
+                    continue
+                tokens = [
+                    tok.lower()
+                    for tok in re.findall(r"[A-Za-z0-9]+", item_str)
+                    if tok.lower() not in {
+                        "corp", "corporation", "inc", "incorporated", "llc", "ltd",
+                        "limited", "co", "company", "party", "the", "a", "an", "and"
+                    }
+                ]
+                if tokens and not any(tok in quote_norm for tok in tokens):
+                    return False, f"Party identifier '{item_str}' is not mentioned in cited quote."
+            return True, None
+
+        val_str = str(value).strip()
+        val_norm = " ".join(val_str.lower().split())
+
+        # Exact substring match always passes
+        if val_norm in quote_norm:
+            return True, None
+
+        # 2. Date checks (effective_date, expiration_date)
+        if "date" in field_name:
+            years = re.findall(r"\b(19\d\d|20\d\d)\b", val_str)
+            if years and not all(y in quote_norm for y in years):
+                return False, f"Year in date '{val_str}' does not match cited quote."
+            months = [
+                m for m in ("january", "february", "march", "april", "may", "june",
+                            "july", "august", "september", "october", "november", "december")
+                if m in val_norm
+            ]
+            if months and not any(m in quote_norm for m in months):
+                return False, f"Month in date '{val_str}' does not match cited quote."
+            return True, None
+
+        # 3. Numeric / Duration / Notice / Value checks
+        if field_name in ("contract_value", "notice_period", "contract_duration", "confidentiality_period"):
+            val_numbers = [n.replace(",", "") for n in re.findall(r"\b\d+(?:,\d{3})*(?:\.\d+)?\b", val_str.replace("$", ""))]
+            quote_numbers = [n.replace(",", "") for n in re.findall(r"\b\d+(?:,\d{3})*(?:\.\d+)?\b", quote_norm.replace("$", ""))]
+            if val_numbers and not all(n in quote_numbers for n in val_numbers):
+                return False, f"Numeric quantity in '{val_str}' is not supported by cited quote."
+            for unit in ("day", "days", "month", "months", "year", "years", "week", "weeks"):
+                if re.search(rf"\b{unit}\b", val_norm) and not re.search(rf"\b{unit[:3]}", quote_norm):
+                    return False, f"Time unit '{unit}' in '{val_str}' is not found in cited quote."
+            return True, None
+
+        # 4. Governing law / Jurisdiction
+        if field_name == "governing_law_and_jurisdiction":
+            state_tokens = [
+                tok for tok in re.findall(r"[A-Za-z]+", val_norm)
+                if tok not in {"state", "of", "laws", "the", "and", "jurisdiction", "court", "courts"}
+            ]
+            if state_tokens and not any(tok in quote_norm for tok in state_tokens):
+                return False, f"Jurisdiction name '{val_str}' is not mentioned in cited quote."
+            return True, None
+
+        # 5. Contract title and type
+        if field_name == "contract_title_and_type":
+            type_keywords = {
+                "nda": ["non-disclosure", "nondisclosure", "confidentiality"],
+                "service": ["service", "services", "statement of work", "sow"],
+                "employment": ["employment", "offer letter", "employee"],
+                "partnership": ["partnership", "partners"],
+                "commercial": ["commercial", "agreement", "contract"],
+            }
+            for key, synonyms in type_keywords.items():
+                if key in val_norm:
+                    if not any(syn in quote_norm for syn in synonyms):
+                        return False, f"Contract type '{val_str}' is not supported by title quote."
+                    break
+            return True, None
+
+        # 6. Dispute resolution
+        if field_name == "dispute_resolution_method":
+            if "arbitrat" in val_norm and "arbitrat" not in quote_norm:
+                return False, f"Dispute method '{val_str}' is not supported by quote."
+            if "mediat" in val_norm and "mediat" not in quote_norm:
+                return False, f"Dispute method '{val_str}' is not supported by quote."
+            if "litigat" in val_norm and "court" not in quote_norm and "litigat" not in quote_norm:
+                return False, f"Dispute method '{val_str}' is not supported by quote."
+            return True, None
+
+        # 7. Liability limitations
+        if "unlimited" in val_norm and "unlimited" not in quote_norm:
+            return False, f"Claim of '{val_str}' is not supported by cited quote."
+
+        # General token overlap check: at least 40% of non-stopwords must be present in quote
+        val_tokens = [
+            tok for tok in re.findall(r"[A-Za-z0-9]+", val_norm)
+            if len(tok) >= 3 and tok not in {"shall", "will", "the", "and", "for", "with", "from", "that", "this", "either", "party"}
+        ]
+        if val_tokens:
+            matched = sum(1 for tok in val_tokens if tok in quote_norm)
+            if matched / len(val_tokens) < 0.4:
+                return False, f"Value content '{val_str[:50]}' lacks sufficient textual support in quote."
+
+        return True, None
+
+    @staticmethod
     def verify_evidence(
         pages: list[dict[str, Any]],
         clauses: list[dict[str, Any]],
@@ -219,13 +334,51 @@ class SummaryAgent:
     ) -> dict[str, Any]:
         """Verify risk findings, template comparisons, missing clauses, and metadata against source evidence."""
         clause_map = {c["clause_id"]: c for c in clauses}
-        pdf_pages = [int(p["page_number"]) for p in pages if p.get("page_number") is not None]
-        max_page = max(pdf_pages, default=1)
-        is_docx = any(p.get("location_type") == "docx_paragraph" for p in pages)
-        max_paragraph = max(
-            (len(p.get("blocks", [])) for p in pages if p.get("location_type") == "docx_paragraph"),
-            default=len(clauses) or 1,
-        )
+
+        # Build actual sets of valid paragraph indices from DOCX blocks/clauses
+        valid_paragraph_indices: set[int] = set()
+        for p in pages:
+            if p.get("location_type") == "docx_paragraph":
+                for b in p.get("blocks", []):
+                    b_idx = b.get("paragraph_index")
+                    if isinstance(b_idx, int):
+                        valid_paragraph_indices.add(b_idx)
+                p_idx = p.get("paragraph_index")
+                if isinstance(p_idx, int):
+                    valid_paragraph_indices.add(p_idx)
+        for c in clauses:
+            c_idx = c.get("paragraph_index")
+            if isinstance(c_idx, int):
+                valid_paragraph_indices.add(c_idx)
+
+        # Build actual sets of valid PDF page numbers
+        valid_pdf_pages: set[int] = set()
+        for p in pages:
+            p_no = p.get("page_number")
+            if isinstance(p_no, int):
+                valid_pdf_pages.add(p_no)
+        for c in clauses:
+            c_no = c.get("page_number")
+            if isinstance(c_no, int):
+                valid_pdf_pages.add(c_no)
+
+        is_docx = any(p.get("location_type") == "docx_paragraph" for p in pages) or bool(valid_paragraph_indices)
+        max_page = max(valid_pdf_pages) if valid_pdf_pages else 1
+        max_paragraph = max(valid_paragraph_indices) if valid_paragraph_indices else len(clauses)
+
+        def _is_valid_paragraph(para_idx: Any) -> bool:
+            if not isinstance(para_idx, int):
+                return False
+            if valid_paragraph_indices:
+                return para_idx in valid_paragraph_indices
+            return 1 <= para_idx <= max_paragraph
+
+        def _is_valid_page(page_no: Any) -> bool:
+            if not isinstance(page_no, int):
+                return False
+            if valid_pdf_pages:
+                return page_no in valid_pdf_pages
+            return 1 <= page_no <= max_page
 
         detected_cats = {
             c["category"]
@@ -245,10 +398,10 @@ class SummaryAgent:
 
             if loc_type == "docx_paragraph" or is_docx:
                 para_idx = finding.get("paragraph_index")
-                loc_valid = isinstance(para_idx, int) and 1 <= para_idx <= max(max_paragraph, para_idx)
+                loc_valid = _is_valid_paragraph(para_idx)
             else:
                 page_no = finding.get("page_number")
-                loc_valid = isinstance(page_no, int) and 1 <= page_no <= max_page
+                loc_valid = _is_valid_page(page_no)
 
             valid = (
                 src_clause is not None
@@ -273,8 +426,12 @@ class SummaryAgent:
 
             if comp.get("insufficient_evidence"):
                 comp["verified"] = False
+                unverified_count += 1
                 comp["verification_note"] = (
                     "Insufficient reference evidence: retrieved similarity below threshold or empty."
+                )
+                verification_notes.append(
+                    f"Comparison for {cid} marked unverified due to insufficient reference evidence."
                 )
                 continue
 
@@ -309,22 +466,51 @@ class SummaryAgent:
                 if not isinstance(val, dict) or k in ("document_id", "extraction_source", "completeness_score"):
                     continue
                 quote = (val.get("source_quote") or "").strip()
-                has_val = val.get("value") is not None
+                value = val.get("value")
                 is_missing = val.get("is_missing", False)
-                if has_val and quote:
-                    quote_matched = (
-                        (bool(extracted_text) and quote.lower() in extracted_text.lower())
-                        or any(quote.lower() in c.get("original_text", "").lower() for c in clauses)
-                    )
-                    val["verified"] = quote_matched
-                    if quote_matched:
-                        verified_metadata_count += 1
-                    else:
-                        unverified_count += 1
-                        val["notes"] = "Source quote could not be matched verbatim in contract text."
-                        verification_notes.append(f"Metadata field '{k}' marked unverified.")
-                elif is_missing:
+                loc_type = val.get("location_type") or ("docx_paragraph" if is_docx else "pdf_page")
+
+                if is_missing or value is None or not quote:
                     val["verified"] = False
+                    continue
+
+                # 1. Location reference validation
+                if loc_type == "docx_paragraph" or is_docx:
+                    loc_idx = val.get("paragraph_index")
+                    loc_valid = _is_valid_paragraph(loc_idx)
+                    loc_label = f"DOCX paragraph {loc_idx}"
+                else:
+                    page_no = val.get("page_number")
+                    loc_valid = _is_valid_page(page_no)
+                    loc_label = f"Page {page_no}"
+
+                # 2. Quotation grounding verification
+                quote_matched = (
+                    (bool(extracted_text) and quote.lower() in extracted_text.lower())
+                    or any(quote.lower() in c.get("original_text", "").lower() for c in clauses)
+                )
+
+                # 3. Value-to-quote semantic support validation
+                value_supported, val_err = SummaryAgent._validate_metadata_value_support(k, value, quote)
+
+                # Field is ONLY verified if quotation matches, location is valid, AND value is supported
+                if quote_matched and loc_valid and value_supported:
+                    val["verified"] = True
+                    val["notes"] = None
+                    verified_metadata_count += 1
+                else:
+                    val["verified"] = False
+                    unverified_count += 1
+                    reasons = []
+                    if not quote_matched:
+                        reasons.append("source quote not found verbatim in contract text")
+                    if not loc_valid:
+                        reasons.append(f"invalid location reference ({loc_label})")
+                    if not value_supported:
+                        reasons.append(val_err or "extracted value is not supported by cited quote")
+                    note_msg = "; ".join(reasons).capitalize() + "."
+                    val["notes"] = note_msg
+                    verification_notes.append(f"Metadata field '{k}' marked unverified: {note_msg}")
 
         return {
             "all_verified": unverified_count == 0,

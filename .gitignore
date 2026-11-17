@@ -15,9 +15,20 @@ venv/
 storage/uploads/*
 storage/extracted/*
 storage/vectorstore/*
-storage/*.db
+storage/*.db*
 storage/*.sqlite*
 outputs/reports/*
+
+# SQLite database & runtime journal files
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Scratch & temporary scripts
+scratch/
 
 # Keep folder structure tracked if needed
 !storage/uploads/.gitkeep
