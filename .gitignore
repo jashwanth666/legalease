@@ -25,8 +25,9 @@ outputs/reports/*
 !storage/vectorstore/.gitkeep
 !outputs/reports/.gitkeep
 
-# IDE
+# IDE & Tooling dumps
 .vscode/
 .idea/
 *.swp
+repomix-output.xml
 

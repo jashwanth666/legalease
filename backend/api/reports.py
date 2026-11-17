@@ -41,8 +41,8 @@ def list_reports(
     for rep, doc in reports:
         try:
             contained = resolve_contained_path(settings.reports_dir, Path(rep.report_path))
-            exists = contained.exists()
-        except DocumentValidationError:
+            exists = contained.exists() and contained.stat().st_size > 0
+        except (DocumentValidationError, OSError):
             exists = False
         items.append(
             {
@@ -52,6 +52,7 @@ def list_reports(
                 "overall_risk_score": doc.overall_risk_score,
                 "overall_risk_level": doc.overall_risk_level,
                 "report_exists": exists,
+                "file_ok": exists,
                 "created_at": rep.created_at,
             }
         )
@@ -59,8 +60,10 @@ def list_reports(
 
 
 @router.get("/report/{document_id}")
+@router.get("/reports/{document_id}/download")
 def download_report(
     document_id: str,
+    regenerate: bool = True,
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
@@ -91,7 +94,15 @@ def download_report(
     except DocumentValidationError:
         report_path = resolve_contained_path(settings.reports_dir, default_report_path)
 
-    if not report_path.exists():
+    file_needs_generation = not report_path.exists() or report_path.stat().st_size == 0
+
+    if file_needs_generation and not regenerate:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Report file missing or corrupted. Re-run analysis to regenerate.",
+        )
+
+    if file_needs_generation:
         # Regenerate cleanly inside managed reports directory from SQLite state
         clauses = (
             db.query(Clause)
@@ -132,72 +143,102 @@ def download_report(
             "high_count": counts["high"],
             "critical_count": counts["critical"],
         }
-        missing_clauses = (
-            json.loads(doc.missing_clauses_json) if doc.missing_clauses_json else {}
-        )
-        generate_analysis_pdf(
-            output_path=report_path,
-            document_meta={
-                "document_id": doc.document_id,
-                "filename": doc.filename,
-                "file_type": doc.file_type,
-                "page_count": doc.page_count,
-                "detected_contract_type": doc.detected_contract_type,
-                "analysis_mode": doc.analysis_mode or "deterministic_fallback",
-                "gemini_status": doc.gemini_status,
-                "fallback_reason": doc.fallback_reason,
-                "embedding_backend": doc.embedding_backend,
-            },
-            overview=overview,
-            executive_summary=doc.executive_summary or "",
-            clauses=[
-                {
-                    "clause_id": c.clause_id,
-                    "page_number": c.page_number,
-                    "end_page_number": c.end_page_number,
-                    "location_type": c.location_type,
-                    "paragraph_index": c.paragraph_index,
-                    "section_title": c.section_title,
-                    "category": c.category,
-                    "title": c.title,
-                    "description": c.description,
-                    "original_text": c.original_text,
-                }
-                for c in clauses
-            ],
-            risk_results=[
-                {
-                    "clause_id": r.clause_id,
-                    "risk_level": r.risk_level,
-                    "risk_score": r.risk_score,
-                    "risk_title": r.risk_title,
-                    "explanation": r.explanation,
-                    "potential_impact": r.potential_impact,
-                    "suggested_action": r.suggested_action,
-                    "page_number": r.page_number,
-                    "location_type": r.location_type,
-                    "paragraph_index": r.paragraph_index,
-                    "section_title": r.section_title,
-                    "finding_type": r.finding_type,
-                    "verified": r.verified,
-                }
-                for r in risks
-            ],
-            comparisons=[
+
+        missing_clauses = {}
+        if doc.missing_clauses_json:
+            try:
+                missing_clauses = json.loads(doc.missing_clauses_json)
+            except Exception:
+                missing_clauses = {}
+
+        formatted_comparisons = []
+        for comp in comparisons:
+            diffs = []
+            if comp.differences:
+                try:
+                    loaded_diff = json.loads(comp.differences)
+                    if isinstance(loaded_diff, list):
+                        diffs = loaded_diff
+                    elif loaded_diff:
+                        diffs = [str(loaded_diff)]
+                except Exception:
+                    diffs = [str(comp.differences)]
+            formatted_comparisons.append(
                 {
                     "clause_id": comp.clause_id,
                     "reference_source": comp.reference_source,
                     "jurisdiction": "Illustrative Reference",
-                    "differences": json.loads(comp.differences) if comp.differences else [],
+                    "differences": diffs,
                     "recommendation": comp.recommendation or "",
                 }
-                for comp in comparisons
-            ],
-            missing_clauses=missing_clauses,
+            )
+
+        try:
+            generate_analysis_pdf(
+                output_path=report_path,
+                document_meta={
+                    "document_id": doc.document_id,
+                    "filename": doc.filename,
+                    "file_type": doc.file_type,
+                    "page_count": doc.page_count,
+                    "detected_contract_type": doc.detected_contract_type,
+                    "analysis_mode": doc.analysis_mode or "deterministic_fallback",
+                    "gemini_status": doc.gemini_status,
+                    "fallback_reason": doc.fallback_reason,
+                    "embedding_backend": doc.embedding_backend,
+                },
+                overview=overview,
+                executive_summary=doc.executive_summary or "",
+                clauses=[
+                    {
+                        "clause_id": c.clause_id,
+                        "page_number": c.page_number,
+                        "end_page_number": c.end_page_number,
+                        "location_type": c.location_type,
+                        "paragraph_index": c.paragraph_index,
+                        "section_title": c.section_title,
+                        "category": c.category,
+                        "title": c.title,
+                        "description": c.description,
+                        "original_text": c.original_text,
+                    }
+                    for c in clauses
+                ],
+                risk_results=[
+                    {
+                        "clause_id": r.clause_id,
+                        "risk_level": r.risk_level,
+                        "risk_score": r.risk_score,
+                        "risk_title": r.risk_title,
+                        "explanation": r.explanation,
+                        "potential_impact": r.potential_impact,
+                        "suggested_action": r.suggested_action,
+                        "page_number": r.page_number,
+                        "location_type": r.location_type,
+                        "paragraph_index": r.paragraph_index,
+                        "section_title": r.section_title,
+                        "finding_type": r.finding_type,
+                        "verified": r.verified,
+                    }
+                    for r in risks
+                ],
+                comparisons=formatted_comparisons,
+                missing_clauses=missing_clauses,
+            )
+            if report_row is None:
+                db.add(AnalysisReport(document_id=document_id, report_path=str(report_path)))
+                db.commit()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Report file missing or corrupted. Re-run analysis to regenerate. Error: {exc}",
+            )
+
+    if not report_path.exists() or report_path.stat().st_size == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Report file missing or corrupted. Re-run analysis to regenerate.",
         )
-        if report_row is None:
-            db.add(AnalysisReport(document_id=document_id, report_path=str(report_path)))
-            db.commit()
 
     safe_download_name = f"LegalEase_Report_{document_id}.pdf"
     return FileResponse(

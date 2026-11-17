@@ -159,15 +159,6 @@ def analyze_document(
             detail=f"Document '{document_id}' not found.",
         )
 
-    if doc.ocr_required:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                "No usable selectable text was detected in this document. "
-                "OCR is required before automated analysis."
-            ),
-        )
-
     file_path = settings.upload_dir / doc.stored_filename
     if not file_path.exists():
         raise HTTPException(
@@ -212,9 +203,7 @@ def analyze_document(
 
     errors = result_state.get("processing_errors") or []
     if errors:
-        if result_state.get("ocr_required"):
-            next_status = "ocr_required"
-        elif result_state.get("db_saved") and not result_state.get("pdf_generated"):
+        if result_state.get("db_saved") and not result_state.get("pdf_generated"):
             next_status = "partially_analyzed"
         else:
             next_status = "failed"

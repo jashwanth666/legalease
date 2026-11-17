@@ -245,3 +245,168 @@ def test_clause_splitting_flags_uncertain_unheaded_prose():
     assert len(clauses) == 1
     assert clauses[0].segmentation_uncertain is True
     assert clauses[0].segmentation_confidence == "medium"
+
+
+def test_docx_table_cells_have_paragraph_index(tmp_path: Path):
+    """DOCX extraction must assign a numeric paragraph_index to every block including tables."""
+    docx_path = tmp_path / "table_test.docx"
+    doc = docx.Document()
+    doc.add_heading("Terms", level=1)
+    doc.add_paragraph("This agreement sets out the payment schedule below.")
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Milestone"
+    table.cell(0, 1).text = "Fee"
+    table.cell(1, 0).text = "Delivery"
+    table.cell(1, 1).text = "$5,000"
+    doc.save(str(docx_path))
+
+    result = extract_document_text(
+        file_path=docx_path,
+        document_id="DOC-TBL",
+        original_filename="table_test.docx",
+        file_type="docx",
+    )
+
+    blocks = result["pages"][0]["blocks"]
+
+    # Every block must have a numeric paragraph_index
+    assert all(
+        isinstance(b.get("paragraph_index"), int) and b["paragraph_index"] >= 1
+        for b in blocks
+    ), "All blocks (paragraphs and tables) must have a numeric paragraph_index"
+
+    # At least one block must contain table cell text
+    all_text = " ".join(b["text"] for b in blocks)
+    assert "Milestone" in all_text or "Delivery" in all_text, (
+        "Table cell text must be present in extracted blocks"
+    )
+
+    # The table block's paragraph_index must be greater than the preceding paragraph's
+    table_block = next(b for b in blocks if "Milestone" in b["text"] or "Delivery" in b["text"])
+    assert table_block["paragraph_index"] > 1, (
+        "Table block paragraph_index should be greater than the first heading index"
+    )
+
+    # location_type on every block is docx_paragraph
+    assert all(b.get("location_type") == "docx_paragraph" for b in blocks)
+
+
+def test_docx_section_title_propagates_to_clause(tmp_path: Path):
+    """section_title from DOCX heading must flow through to the ExtractedClause."""
+    docx_path = tmp_path / "section_title_test.docx"
+    doc = docx.Document()
+    doc.add_heading("CONFIDENTIALITY", level=1)
+    doc.add_paragraph(
+        "Each party agrees to keep the other party's information confidential "
+        "and not to disclose it to any third party without prior written consent."
+    )
+    doc.save(str(docx_path))
+
+    result = extract_document_text(
+        file_path=docx_path,
+        document_id="DOC-SEC",
+        original_filename="section_title_test.docx",
+        file_type="docx",
+    )
+
+    clauses = split_pages_into_clauses(result["pages"])
+
+    assert len(clauses) >= 1, "Expected at least one clause to be extracted"
+
+    # Find the clause containing the body paragraph (not the heading-only clause)
+    body_clause = next(
+        (c for c in clauses if "confidential" in c.original_text.lower()),
+        clauses[-1],
+    )
+
+    # section_title must be the heading text
+    assert body_clause.section_title is not None, "section_title must not be None for DOCX clauses"
+    assert "CONFIDENTIALITY" in body_clause.section_title.upper(), (
+        f"Expected 'CONFIDENTIALITY' in section_title, got: {body_clause.section_title!r}"
+    )
+
+    # location_type must be docx_paragraph
+    assert body_clause.location_type == "docx_paragraph", (
+        f"Expected location_type='docx_paragraph', got {body_clause.location_type!r}"
+    )
+
+    # paragraph_index must be set
+    assert body_clause.paragraph_index is not None and body_clause.paragraph_index >= 1, (
+        "paragraph_index must be a positive integer for DOCX clauses"
+    )
+
+
+def test_ocr_fallback_when_no_engine_available(tmp_path: Path, monkeypatch):
+    """When OCR engines are absent, ocr_pdf_pages must return ocr_succeeded=False with a clear error."""
+    from backend.ingestion.document_loader import ocr_pdf_pages
+    import backend.ingestion.document_loader as loader_mod
+
+    # Force pytesseract unavailable
+    monkeypatch.setattr(loader_mod, "_PYTESSERACT_AVAILABLE", False)
+
+    blank_pdf = tmp_path / "blank_scanned.pdf"
+    pdf = fitz.open()
+    pdf.new_page()
+    pdf.save(str(blank_pdf))
+    pdf.close()
+
+    result = ocr_pdf_pages(blank_pdf)
+    assert result.ocr_attempted is True
+    assert result.ocr_succeeded is False
+    assert result.ocr_error is not None
+    assert "OCR" in result.ocr_error
+
+
+def test_ocr_page_references_preserved(tmp_path: Path):
+    """When OCR processes multi-page documents, each page must preserve its page_number and location_type."""
+    from backend.ingestion.document_loader import ocr_pdf_pages
+
+    multi_pdf = tmp_path / "twopage.pdf"
+    pdf = fitz.open()
+    pdf.new_page()
+    pdf.new_page()
+    pdf.save(str(multi_pdf))
+    pdf.close()
+
+    result = ocr_pdf_pages(multi_pdf)
+    assert result.ocr_attempted is True
+    # If pages are returned (even if empty text), check page numbers
+    if result.pages:
+        for idx, page in enumerate(result.pages, start=1):
+            assert page["page_number"] == idx
+            assert page["location_type"] == "pdf_page"
+
+
+def test_scanned_pdf_workflow_runs_to_failed_gracefully(tmp_path: Path, monkeypatch):
+    """A scanned/blank PDF run through the LangGraph workflow must fail cleanly with OCR error."""
+    import backend.ingestion.document_loader as loader_mod
+    from backend.graph.workflow import run_contract_analysis
+
+    monkeypatch.setattr(loader_mod, "_PYTESSERACT_AVAILABLE", False)
+
+    blank_pdf = tmp_path / "unextractable.pdf"
+    pdf = fitz.open()
+    pdf.new_page()
+    pdf.save(str(blank_pdf))
+    pdf.close()
+
+    runtime_config = {
+        "gemini_api_key": "",
+        "extracted_dir": str(tmp_path / "extracted"),
+        "vectorstore_dir": str(tmp_path / "vectorstore"),
+        "templates_dir": str(tmp_path / "templates"),
+        "reports_dir": str(tmp_path / "reports"),
+    }
+
+    result = run_contract_analysis(
+        document_id="DOC-SCANFAIL",
+        filename="unextractable.pdf",
+        file_path=str(blank_pdf),
+        file_type="pdf",
+        runtime_config=runtime_config,
+    )
+
+    assert result.get("ocr_attempted") is True
+    assert result.get("ocr_succeeded") is False
+    assert len(result.get("processing_errors", [])) > 0
+    assert any("OCR" in err for err in result["processing_errors"])

@@ -13,6 +13,9 @@ class LegalEaseState(TypedDict, total=False):
     file_type: str
     contract_type: str
     ocr_required: bool
+    ocr_attempted: bool
+    ocr_succeeded: bool
+    ocr_error: str | None
     extracted_text: str
     pages: list[dict[str, Any]]
     clauses: list[dict[str, Any]]

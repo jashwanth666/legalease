@@ -318,3 +318,113 @@ def test_docx_end_to_end_with_unicode_and_paragraph_locations(api_client):
     assert pdf_resp.status_code == 200
     assert pdf_resp.content.startswith(b"%PDF-")
 
+
+
+def test_download_report_returns_404_when_file_missing(api_client):
+    """When a report file is deleted from disk and regenerate=False, download must return 404."""
+    client, test_settings = api_client
+    nda_file = Path("data/sample_contracts/sample_nda.pdf")
+    with nda_file.open("rb") as f:
+        up = client.post("/api/upload", files={"file": ("sample_nda.pdf", f, "application/pdf")})
+    doc_id = up.json()["document_id"]
+    client.post(f"/api/analyze/{doc_id}")
+
+    # Delete report from disk
+    rep_path = test_settings.reports_dir / f"LegalEase_Report_{doc_id}.pdf"
+    if rep_path.exists():
+        rep_path.unlink()
+
+    resp = client.get(f"/api/report/{doc_id}?regenerate=false")
+    assert resp.status_code == 404
+    assert "missing or corrupted" in resp.json()["detail"].lower()
+
+
+def test_download_report_returns_404_when_file_zero_bytes(api_client):
+    """When a report file is truncated to 0 bytes and regenerate=False, download must return 404."""
+    client, test_settings = api_client
+    nda_file = Path("data/sample_contracts/sample_nda.pdf")
+    with nda_file.open("rb") as f:
+        up = client.post("/api/upload", files={"file": ("sample_nda.pdf", f, "application/pdf")})
+    doc_id = up.json()["document_id"]
+    client.post(f"/api/analyze/{doc_id}")
+
+    # Truncate report to 0 bytes
+    rep_path = test_settings.reports_dir / f"LegalEase_Report_{doc_id}.pdf"
+    rep_path.write_bytes(b"")
+
+    resp = client.get(f"/api/report/{doc_id}?regenerate=false")
+    assert resp.status_code == 404
+    assert "missing or corrupted" in resp.json()["detail"].lower()
+
+
+def test_report_listing_flags_missing_files(api_client):
+    """Reports endpoint must correctly indicate report_exists=False when the PDF is removed from disk."""
+    client, test_settings = api_client
+    nda_file = Path("data/sample_contracts/sample_nda.pdf")
+    with nda_file.open("rb") as f:
+        up = client.post("/api/upload", files={"file": ("sample_nda.pdf", f, "application/pdf")})
+    doc_id = up.json()["document_id"]
+    client.post(f"/api/analyze/{doc_id}")
+
+    # Remove the file from disk
+    rep_path = test_settings.reports_dir / f"LegalEase_Report_{doc_id}.pdf"
+    if rep_path.exists():
+        rep_path.unlink()
+
+    resp = client.get("/api/reports")
+    assert resp.status_code == 200
+    matched = [r for r in resp.json() if r["document_id"] == doc_id]
+    assert len(matched) == 1
+    assert matched[0]["report_exists"] is False
+    assert matched[0]["file_ok"] is False
+
+
+def test_report_regeneration_with_malformed_missing_clauses_json(api_client):
+    """Report regeneration must gracefully handle malformed JSON in missing_clauses_json."""
+    client, test_settings = api_client
+    from backend.database import Document, get_db
+
+    nda_file = Path("data/sample_contracts/sample_nda.pdf")
+    with nda_file.open("rb") as f:
+        up = client.post("/api/upload", files={"file": ("sample_nda.pdf", f, "application/pdf")})
+    doc_id = up.json()["document_id"]
+    client.post(f"/api/analyze/{doc_id}")
+
+    # Delete report from disk so regeneration is triggered
+    rep_path = test_settings.reports_dir / f"LegalEase_Report_{doc_id}.pdf"
+    if rep_path.exists():
+        rep_path.unlink()
+
+    # Intentionally corrupt missing_clauses_json in DB
+    db_gen = client.app.dependency_overrides.get(get_db, get_db)()
+    db = next(db_gen)
+    try:
+        doc = db.query(Document).filter(Document.document_id == doc_id).first()
+        doc.missing_clauses_json = "{invalid_json_corrupt"
+        db.commit()
+    finally:
+        db.close()
+
+    # Request report download (triggers regeneration)
+    resp = client.get(f"/api/report/{doc_id}")
+    assert resp.status_code == 200
+    assert resp.content.startswith(b"%PDF-")
+
+
+def test_malformed_analysis_data_does_not_crash_pdf_generation(tmp_path: Path):
+    """Direct generate_analysis_pdf call with None and empty inputs must not raise unhandled exceptions."""
+    from backend.services.pdf_service import generate_analysis_pdf
+
+    out_file = tmp_path / "robustness_test.pdf"
+    res = generate_analysis_pdf(
+        output_path=out_file,
+        document_meta={"document_id": "TEST-ROBUST", "filename": "test.pdf"},
+        overview=None,
+        executive_summary=None,
+        clauses=None,
+        risk_results=None,
+        comparisons=[{"clause_id": "CL-01", "differences": "{corrupt_diff_str"}],
+        missing_clauses=None,
+    )
+    assert res.exists()
+    assert res.stat().st_size > 0

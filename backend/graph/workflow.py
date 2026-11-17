@@ -12,6 +12,7 @@ from backend.graph.nodes import (
     generate_summary_node,
     merge_results_node,
     missing_clause_detection_node,
+    ocr_node,
     rag_template_comparison_node,
     risk_assessment_node,
     save_results_node,
@@ -29,9 +30,18 @@ def _route_after_validation(state: LegalEaseState) -> str:
 
 
 def _route_after_extraction(state: LegalEaseState) -> str:
-    if state.get("ocr_required") or state.get("processing_errors") or not state.get("pages"):
+    if state.get("processing_errors") or not state.get("pages"):
         return "stop"
+    if state.get("ocr_required") and not state.get("ocr_succeeded"):
+        return "ocr"
     return "continue"
+
+
+def _route_after_ocr(state: LegalEaseState) -> str:
+    """After OCR node: proceed to clause splitting on success, stop on failure."""
+    if state.get("ocr_succeeded"):
+        return "continue"
+    return "stop"
 
 
 def _route_after_splitting(state: LegalEaseState) -> str:
@@ -64,6 +74,7 @@ def build_legalease_workflow():
 
     graph.add_node("validate_document", validate_document_node)
     graph.add_node("extract_document_text", extract_document_text_node)
+    graph.add_node("ocr", ocr_node)
     graph.add_node("split_into_clauses", split_into_clauses_node)
     graph.add_node("classify_clauses", classify_clauses_node)
 
@@ -87,6 +98,11 @@ def build_legalease_workflow():
     graph.add_conditional_edges(
         "extract_document_text",
         _route_after_extraction,
+        {"continue": "split_into_clauses", "ocr": "ocr", "stop": END},
+    )
+    graph.add_conditional_edges(
+        "ocr",
+        _route_after_ocr,
         {"continue": "split_into_clauses", "stop": END},
     )
     graph.add_conditional_edges(

@@ -2,6 +2,7 @@
 
 import json
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import median
 from typing import Any
@@ -13,6 +14,25 @@ from docx.oxml.text.paragraph import CT_P
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 import pymupdf as fitz
+
+# ---------------------------------------------------------------------------
+# Optional OCR engine imports — absence must not break the app
+# ---------------------------------------------------------------------------
+try:
+    import pytesseract
+    from PIL import Image  # pytesseract requires Pillow
+    _PYTESSERACT_AVAILABLE = True
+except Exception:
+    _PYTESSERACT_AVAILABLE = False
+
+
+@dataclass
+class ExtractionResult:
+    """Structured result for OCR extraction attempts."""
+    pages: list[dict[str, Any]] = field(default_factory=list)
+    ocr_attempted: bool = False
+    ocr_succeeded: bool = False
+    ocr_error: str | None = None
 
 
 HEADING_PATTERN = re.compile(
@@ -188,27 +208,27 @@ def _extract_docx(file_path: Path) -> tuple[list[dict[str, Any]], bool, str | No
             total_alnum += sum(ch.isalnum() for ch in text)
 
         elif isinstance(item, Table):
-            table_rows: list[str] = []
             for row in item.rows:
-                cells = [
-                    re.sub(r"\s+", " ", cell.text or "").strip()
-                    for cell in row.cells
-                ]
-                if any(cells):
-                    row_line = " | ".join(cells)
-                    table_rows.append(row_line)
+                seen_cells: set[str] = set()
+                unique_cells: list[str] = []
+                for cell in row.cells:
+                    cleaned_cell = re.sub(r"\s+", " ", cell.text or "").strip()
+                    if cleaned_cell and cleaned_cell not in seen_cells:
+                        seen_cells.add(cleaned_cell)
+                        unique_cells.append(cleaned_cell)
+                if unique_cells:
+                    row_line = " | ".join(unique_cells)
+                    paragraph_counter += 1
+                    blocks.append(
+                        {
+                            "paragraph_index": paragraph_counter,
+                            "location_type": "docx_paragraph",
+                            "section_title": current_section,
+                            "text": row_line,
+                            "is_heading": False,
+                        }
+                    )
                     total_alnum += sum(ch.isalnum() for ch in row_line)
-            if table_rows:
-                paragraph_counter += 1
-                blocks.append(
-                    {
-                        "paragraph_index": paragraph_counter,
-                        "location_type": "docx_paragraph",
-                        "section_title": current_section,
-                        "text": "\n".join(table_rows),
-                        "is_heading": False,
-                    }
-                )
 
     combined_text = "\n\n".join(b["text"] for b in blocks).strip()
     pages: list[dict[str, Any]] = [
@@ -273,6 +293,107 @@ def extract_document_text(
         "pages": pages,
         "full_text": full_text,
     }
+
+
+def ocr_pdf_pages(pdf_path: Path) -> "ExtractionResult":
+    """Attempt OCR on a scanned PDF using pytesseract or PyMuPDF's built-in OCR.
+
+    Strategy (in priority order):
+      1. pytesseract  — renders each page to a PIL image and runs Tesseract.
+      2. PyMuPDF get_textpage_ocr()  — available in PyMuPDF >= 1.21 with
+         Tesseract installed, but we guard against AttributeError / RuntimeError
+         so the absence of Tesseract still degrades gracefully.
+      3. Neither available → return ExtractionResult with ocr_succeeded=False.
+
+    Returns an ExtractionResult; never raises.
+    """
+    result = ExtractionResult(ocr_attempted=True)
+
+    # ------------------------------------------------------------------ #
+    # Strategy 1: pytesseract
+    # ------------------------------------------------------------------ #
+    if _PYTESSERACT_AVAILABLE:
+        try:
+            import io
+            doc = fitz.open(str(pdf_path))
+            pages: list[dict[str, Any]] = []
+            try:
+                for page_idx, page in enumerate(doc, start=1):
+                    # Render at 200 DPI
+                    mat = fitz.Matrix(200 / 72, 200 / 72)
+                    pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+                    img_bytes = pix.tobytes("png")
+                    img = Image.open(io.BytesIO(img_bytes))
+                    page_text = pytesseract.image_to_string(img)
+                    page_text = page_text.strip()
+                    pages.append(
+                        {
+                            "page_number": page_idx,
+                            "location_type": "pdf_page",
+                            "paragraph_index": None,
+                            "section_title": None,
+                            "text": page_text,
+                            "headings": [],
+                        }
+                    )
+            finally:
+                doc.close()
+
+            any_text = any(
+                sum(ch.isalnum() for ch in p["text"]) > 20 for p in pages
+            )
+            result.pages = pages
+            result.ocr_succeeded = any_text
+            if not any_text:
+                result.ocr_error = "OCR ran but produced no usable text (< 20 alphanumeric chars per page)."
+            return result
+        except Exception as exc:
+            # pytesseract present but Tesseract binary missing / other error
+            result.ocr_error = f"pytesseract OCR failed: {exc}"
+            # fall through to strategy 2
+
+    # ------------------------------------------------------------------ #
+    # Strategy 2: PyMuPDF built-in get_textpage_ocr()
+    # ------------------------------------------------------------------ #
+    try:
+        doc = fitz.open(str(pdf_path))
+        pages = []
+        try:
+            for page_idx, page in enumerate(doc, start=1):
+                tp = page.get_textpage_ocr(flags=0, dpi=200, full=True)
+                page_text = tp.extractText().strip()
+                pages.append(
+                    {
+                        "page_number": page_idx,
+                        "location_type": "pdf_page",
+                        "paragraph_index": None,
+                        "section_title": None,
+                        "text": page_text,
+                        "headings": [],
+                    }
+                )
+        finally:
+            doc.close()
+
+        any_text = any(
+            sum(ch.isalnum() for ch in p["text"]) > 20 for p in pages
+        )
+        result.pages = pages
+        result.ocr_succeeded = any_text
+        result.ocr_error = None  # clear previous pytesseract error if PyMuPDF succeeded
+        if not any_text:
+            result.ocr_error = "PyMuPDF OCR ran but produced no usable text (< 20 alphanumeric chars per page)."
+        return result
+    except (AttributeError, RuntimeError, Exception) as exc:
+        # get_textpage_ocr not available or Tesseract not installed for PyMuPDF
+        pass
+
+    # ------------------------------------------------------------------ #
+    # Strategy 3: no engine available
+    # ------------------------------------------------------------------ #
+    result.ocr_succeeded = False
+    result.ocr_error = "No OCR engine available (pytesseract or PyMuPDF OCR required)"
+    return result
 
 
 def save_extracted_document(extracted_data: dict[str, Any], extracted_dir: Path) -> Path:

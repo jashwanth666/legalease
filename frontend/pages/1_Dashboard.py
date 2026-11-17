@@ -215,7 +215,7 @@ if docs:
                 "Document ID": d["document_id"],
                 "Filename": d["filename"],
                 "Format": d["file_type"].upper(),
-                "Pages / Layout": d.get("page_count", 0) if d["file_type"] == "pdf" else "DOCX Paras",
+                "Pages / Layout": f"{d.get('page_count', 0)} Pages" if d["file_type"] == "pdf" else "DOCX Paras",
                 "Status": status_val.upper(),
                 "Mode": d.get("analysis_mode") or "Pending",
                 "Risk Score": score_disp,

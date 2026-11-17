@@ -1,9 +1,13 @@
 """ReportLab PDF report generation service for LegalEase."""
 
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
+
+
+logger = logging.getLogger(__name__)
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import LETTER
@@ -97,13 +101,30 @@ def _resolve_pdf_fonts() -> tuple[str, str, str]:
 BODY_FONT, BOLD_FONT, ITALIC_FONT = _resolve_pdf_fonts()
 
 
+def _safe_get(d: Any, *keys: str, default: Any = None) -> Any:
+    """Safely traverse nested dicts/lists, returning `default` on any miss or type error."""
+    if not isinstance(d, dict):
+        return default
+    for key in keys:
+        try:
+            d = d[key]
+        except (KeyError, TypeError, IndexError):
+            return default
+    return d if d is not None else default
+
+
 def _safe(value: Any) -> str:
     return escape(str(value or "")).replace("\n", "<br/>")
 
 
 def _format_loc(item: dict[str, Any]) -> str:
+    if not isinstance(item, dict):
+        return "Unknown"
     if item.get("location_type") == "docx_paragraph" or item.get("page_number") is None:
         pidx = item.get("paragraph_index")
+        sec = item.get("section_title")
+        if pidx and sec:
+            return f"Para {pidx} (§ {sec[:20]})"
         return f"Para {pidx}" if pidx else "DOCX"
     start = item.get("page_number")
     end = item.get("end_page_number")
@@ -151,6 +172,27 @@ def generate_analysis_pdf(
     missing_clauses: dict[str, Any],
 ) -> Path:
     """Build a structured, multi-section LegalEase PDF report using ReportLab."""
+    # Defensive normalisation — guard against None or wrong types from callers
+    if not isinstance(document_meta, dict):
+        logger.warning("generate_analysis_pdf: document_meta is not a dict (%r), using {}", type(document_meta))
+        document_meta = {}
+    if not isinstance(overview, dict):
+        logger.warning("generate_analysis_pdf: overview is not a dict (%r), using {}", type(overview))
+        overview = {}
+    if not isinstance(executive_summary, str):
+        executive_summary = str(executive_summary or "")
+    if not isinstance(clauses, list):
+        logger.warning("generate_analysis_pdf: clauses is not a list (%r), using []", type(clauses))
+        clauses = []
+    if not isinstance(risk_results, list):
+        logger.warning("generate_analysis_pdf: risk_results is not a list (%r), using []", type(risk_results))
+        risk_results = []
+    if not isinstance(comparisons, list):
+        logger.warning("generate_analysis_pdf: comparisons is not a list (%r), using []", type(comparisons))
+        comparisons = []
+    if not isinstance(missing_clauses, dict):
+        logger.warning("generate_analysis_pdf: missing_clauses is not a dict (%r), using {}", type(missing_clauses))
+        missing_clauses = {}
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc_id = document_meta.get("document_id", "UNKNOWN")
 
@@ -385,7 +427,13 @@ def generate_analysis_pdf(
     story.append(Paragraph("6. Reference Template Comparisons (Illustrative Only)", section_style))
     if comparisons:
         for comp in comparisons:
-            diffs = "; ".join(comp.get("differences", []))
+            if not isinstance(comp, dict):
+                continue
+            diffs_val = comp.get("differences", [])
+            if isinstance(diffs_val, list):
+                diffs = "; ".join(str(d) for d in diffs_val)
+            else:
+                diffs = str(diffs_val or "")
             story.append(
                 Paragraph(
                     f"<b>{_safe(comp.get('clause_id'))}</b> vs. <i>{_safe(comp.get('reference_source'))}</i> "
@@ -404,16 +452,17 @@ def generate_analysis_pdf(
 
     # 9. Missing Clause Categories
     story.append(Paragraph("7. Missing or Uncertain Clause Categories", section_style))
-    missing_list = missing_clauses.get("missing_categories", [])
-    if missing_list:
+    missing_list = missing_clauses.get("missing_categories", []) if isinstance(missing_clauses, dict) else []
+    if missing_list and isinstance(missing_list, list):
         for item in missing_list:
-            story.append(
-                Paragraph(
-                    f"<b>{_safe(item.get('category'))}</b> [{_safe(item.get('status'))}]: "
-                    f"{_safe(item.get('explanation'))}",
-                    small_style,
+            if isinstance(item, dict):
+                story.append(
+                    Paragraph(
+                        f"<b>{_safe(item.get('category'))}</b> [{_safe(item.get('status'))}]: "
+                        f"{_safe(item.get('explanation'))}",
+                        small_style,
+                    )
                 )
-            )
     else:
         story.append(Paragraph("All expected checklist categories for this contract type were detected.", body_style))
 

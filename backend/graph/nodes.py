@@ -26,6 +26,7 @@ from backend.guardrails.document_guard import (
     validate_uploaded_document,
 )
 from backend.ingestion.clause_splitter import split_pages_into_clauses
+from backend.ingestion.document_loader import ocr_pdf_pages
 from backend.retrieval.embeddings import EmbeddingService
 from backend.retrieval.retriever import TemplateRetriever
 from backend.schemas.clause import ClauseClassification, ExtractedClause
@@ -99,19 +100,59 @@ def extract_document_text_node(state: dict[str, Any]) -> dict[str, Any]:
         return {"processing_errors": [f"Text extraction failed ({type(exc).__name__}): {exc}"]}
 
     ocr_required = bool(extracted.get("ocr_required", False))
-    errors: list[str] = []
-    if ocr_required:
-        errors.append(
-            extracted.get("warning")
-            or "No usable text detected; OCR is required before analysis."
-        )
-
     return {
         "pages": extracted.get("pages", []),
         "extracted_text": extracted.get("full_text", ""),
         "ocr_required": ocr_required,
-        "processing_errors": errors,
+        "processing_errors": [],
     }
+
+
+def ocr_node(state: dict[str, Any]) -> dict[str, Any]:
+    """Run OCR on a scanned PDF and update pages/extracted_text in state."""
+    file_path = Path(state.get("file_path", ""))
+    if not file_path.exists():
+        return {
+            "ocr_attempted": True,
+            "ocr_succeeded": False,
+            "ocr_error": f"File not found for OCR: {file_path}",
+            "processing_errors": [f"OCR skipped: file not found ({file_path})."],
+        }
+
+    try:
+        result = ocr_pdf_pages(file_path)
+    except Exception as exc:
+        logger.exception("ocr_pdf_pages raised unexpectedly for %s", state.get("document_id"))
+        err = f"Unexpected OCR error ({type(exc).__name__}): {exc}"
+        return {
+            "ocr_attempted": True,
+            "ocr_succeeded": False,
+            "ocr_error": err,
+            "processing_errors": [err],
+        }
+
+    updates: dict[str, Any] = {
+        "ocr_attempted": result.ocr_attempted,
+        "ocr_succeeded": result.ocr_succeeded,
+        "ocr_error": result.ocr_error,
+    }
+
+    if result.ocr_succeeded and result.pages:
+        full_text = "\n\n".join(
+            f"[Page {p['page_number']}]\n{p['text']}"
+            for p in result.pages
+            if p.get("text")
+        ).strip()
+        updates["pages"] = result.pages
+        updates["extracted_text"] = full_text
+        # Clear the ocr_required flag so downstream nodes proceed normally
+        updates["ocr_required"] = False
+    else:
+        # OCR failed — surface the error so the workflow can terminate cleanly
+        err_msg = result.ocr_error or "OCR failed with no additional details."
+        updates["processing_errors"] = [err_msg]
+
+    return updates
 
 
 def split_into_clauses_node(state: dict[str, Any]) -> dict[str, Any]:
@@ -431,6 +472,8 @@ def save_results_node(state: dict[str, Any]) -> dict[str, Any]:
 
         # Mark as 'partially_analyzed' until PDF generation also succeeds
         doc.processing_status = "partially_analyzed"
+        if state.get("ocr_succeeded"):
+            doc.ocr_required = False
         doc.detected_contract_type = state.get("contract_type")
         doc.overall_risk_score = state.get("overall_risk_score")
         doc.overall_risk_level = state.get("overall_risk_level")

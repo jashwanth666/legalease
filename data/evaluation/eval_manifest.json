@@ -1,0 +1,48 @@
+{
+  "version": "1.0",
+  "description": "Repeatable evaluation manifest defining baseline extraction, risk detection, and evidence grounding expectations for LegalEase sample contracts in offline deterministic fallback and live modes.",
+  "contracts": [
+    {
+      "filename": "sample_nda.pdf",
+      "contract_type": "NDA",
+      "expected_page_count": 2,
+      "expected_min_clauses": 4,
+      "expected_categories": [
+        "Confidentiality",
+        "Non-Compete",
+        "Termination",
+        "Jurisdiction"
+      ],
+      "known_risk_keywords": [
+        "confidential",
+        "terminat",
+        "compete",
+        "disclos"
+      ],
+      "max_critical_findings": 2,
+      "min_evidence_grounding_ratio": 0.50
+    },
+    {
+      "filename": "sample_service_agreement.pdf",
+      "contract_type": "Service Agreement",
+      "expected_page_count": 3,
+      "expected_min_clauses": 5,
+      "expected_categories": [
+        "Liability",
+        "Indemnification",
+        "Termination",
+        "Payment Terms",
+        "Warranty"
+      ],
+      "known_risk_keywords": [
+        "liability",
+        "indemnif",
+        "warranty",
+        "terminat",
+        "renew"
+      ],
+      "max_critical_findings": 5,
+      "min_evidence_grounding_ratio": 0.50
+    }
+  ]
+}
