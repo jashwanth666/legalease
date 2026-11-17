@@ -1,12 +1,14 @@
-"""Contract upload and explicit analysis confirmation component."""
+"""Contract upload, file preview, and user-initiated LangGraph analysis component."""
 
 from datetime import datetime, timezone
+import html
 import streamlit as st
 
 from frontend.utils.api_client import APIError, LegalEaseAPIClient
 
 
 def _format_size(num_bytes: int) -> str:
+    """Format bytes into readable KB/MB."""
     if num_bytes < 1024:
         return f"{num_bytes} B"
     if num_bytes < 1024 * 1024:
@@ -15,11 +17,33 @@ def _format_size(num_bytes: int) -> str:
 
 
 def render_upload_workflow(client: LegalEaseAPIClient) -> None:
-    """Render PDF/DOCX upload widget, document metadata, and manual Analyze button."""
+    """Render modern SaaS drag-and-drop upload zone, document preview, and confirmation workflow."""
+    st.markdown(
+        """
+        <div style="background:#FFFFFF; border:2px dashed #CBD5E1; border-radius:14px; padding:2rem; text-align:center; margin-bottom:1.25rem;">
+            <div style="font-size:2.4rem; margin-bottom:0.5rem;">📂</div>
+            <div style="font-size:1.15rem; font-weight:700; color:#101B35; margin-bottom:0.25rem;">
+                Upload Legal Agreement for AI Screening
+            </div>
+            <div style="font-size:0.85rem; color:#748094; max-width:480px; margin:0 auto 1rem auto;">
+                Select or drag a commercial contract in PDF or DOCX format. Scanned PDFs without text layers will be detected and flagged.
+            </div>
+            <div style="display:flex; justify-content:center; gap:0.5rem; flex-wrap:wrap;">
+                <span style="background:#EFF6FF; color:#1D4ED8; font-size:0.75rem; font-weight:700; padding:0.2rem 0.6rem; border-radius:999px;">PDF SUPPORTED</span>
+                <span style="background:#EFF6FF; color:#1D4ED8; font-size:0.75rem; font-weight:700; padding:0.2rem 0.6rem; border-radius:999px;">DOCX SUPPORTED</span>
+                <span style="background:#F1F5F9; color:#475569; font-size:0.75rem; font-weight:700; padding:0.2rem 0.6rem; border-radius:999px;">MAX 15 MB</span>
+                <span style="background:#ECFDF5; color:#065F46; font-size:0.75rem; font-weight:700; padding:0.2rem 0.6rem; border-radius:999px;">ENCRYPTED STORAGE</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     uploaded_file = st.file_uploader(
-        "Select a Legal Agreement (PDF or DOCX)",
+        "Upload File",
         type=["pdf", "docx"],
-        help="Maximum upload size is enforced by the backend (default 15 MB). Encrypted PDFs are rejected.",
+        help="Upload standard PDF or DOCX agreements. File size limit is 15 MB.",
+        label_visibility="collapsed",
     )
 
     if uploaded_file is not None:
@@ -27,14 +51,30 @@ def render_upload_workflow(client: LegalEaseAPIClient) -> None:
         ext = uploaded_file.name.rsplit(".", 1)[-1].upper() if "." in uploaded_file.name else "UNKNOWN"
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Filename", uploaded_file.name)
-        col2.metric("File Type", ext)
-        col3.metric("File Size", _format_size(len(raw_bytes)))
-        col4.metric("Selected At", now_str)
+        st.markdown(
+            f"""
+            <div class="le-card" style="border:1px solid #356AE6; background:#F8FAFF; margin-bottom:1rem;">
+                <div style="font-size:0.75rem; font-weight:700; text-transform:uppercase; color:#356AE6; margin-bottom:0.4rem;">
+                    Ready for Ingestion
+                </div>
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
+                    <div>
+                        <span style="font-size:1.1rem; font-weight:700; color:#101B35;">{html.escape(uploaded_file.name)}</span>
+                        <div style="font-size:0.8rem; color:#748094; margin-top:0.2rem;">
+                            Type: <strong>{ext}</strong> &bull; Size: <strong>{_format_size(len(raw_bytes))}</strong> &bull; Selected: {now_str}
+                        </div>
+                    </div>
+                    <span style="background:#ECFDF5; color:#065F46; border:1px solid #A7F3D0; padding:0.2rem 0.6rem; border-radius:999px; font-size:0.75rem; font-weight:700;">
+                        Ready
+                    </span>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-        if st.button("Upload Contract to Secure Storage", type="primary", use_container_width=True):
-            with st.spinner("Validating file signature, storing securely, and extracting text..."):
+        if st.button("Confirm & Upload Contract to Secure Vault", type="primary", use_container_width=True):
+            with st.spinner("Extracting text layers, checking integrity, and indexing document..."):
                 try:
                     resp = client.upload_document(
                         filename=uploaded_file.name,
@@ -44,15 +84,16 @@ def render_upload_workflow(client: LegalEaseAPIClient) -> None:
                     st.session_state["selected_document_id"] = resp["document_id"]
                     st.session_state["last_upload_response"] = resp
                     loc_summary = (
-                        f"{resp['page_count']} pages"
+                        f"{resp['page_count']} pages indexed"
                         if resp["file_type"] == "pdf"
                         else "DOCX paragraphs indexed"
                     )
-                    st.success(f"Uploaded successfully as **{resp['document_id']}** ({loc_summary}).")
+                    st.success(f"Successfully uploaded **{resp['filename']}** (`{resp['document_id']}`) &mdash; {loc_summary}!")
                     st.rerun()
                 except APIError as exc:
                     st.error(f"Upload failed: {exc.message}")
 
+    # Active Document Status & Analysis Confirmation
     last_upload = st.session_state.get("last_upload_response")
     selected_id = st.session_state.get("selected_document_id")
 
@@ -64,52 +105,72 @@ def render_upload_workflow(client: LegalEaseAPIClient) -> None:
             doc = last_upload if (last_upload and last_upload.get("document_id") == selected_id) else None
 
         if doc:
-            st.divider()
-            st.subheader(f"Ready for Review: {doc['filename']} ({doc['document_id']})")
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Document ID", doc["document_id"])
-            m2.metric("Format", doc["file_type"].upper())
-            m3.metric(
-                "Pages" if doc["file_type"] == "pdf" else "Layout",
-                doc.get("page_count", 0) if doc["file_type"] == "pdf" else "DOCX Paras",
-            )
             proc_status = doc.get("processing_status", "uploaded")
-            m4.metric("Status", proc_status.upper())
+            status_colors = {
+                "uploaded": "#356AE6",
+                "processing": "#E69A32",
+                "analyzed": "#16A36A",
+                "partially_analyzed": "#E87536",
+                "failed": "#DC4545",
+            }
+            status_color = status_colors.get(proc_status, "#748094")
+
+            st.markdown(
+                f"""
+                <div class="le-card" style="margin-top:1.5rem; border-top:3px solid {status_color};">
+                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.75rem;">
+                        <div>
+                            <div style="font-size:0.72rem; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:#748094;">
+                                Active Contract in Vault
+                            </div>
+                            <div style="font-size:1.15rem; font-weight:700; color:#101B35;">
+                                {html.escape(doc['filename'])}
+                            </div>
+                        </div>
+                        <div style="display:flex; align-items:center; gap:0.5rem;">
+                            <span style="background:{status_color}18; color:{status_color}; border:1px solid {status_color}40; padding:0.25rem 0.65rem; border-radius:999px; font-size:0.75rem; font-weight:700; text-transform:uppercase;">
+                                {html.escape(proc_status)}
+                            </span>
+                        </div>
+                    </div>
+                    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:0.75rem; font-size:0.8rem; color:#748094; padding:0.6rem 0; border-top:1px solid #F1F4F9; border-bottom:1px solid #F1F4F9;">
+                        <div>ID: <strong style="color:#101B35;">{html.escape(doc['document_id'])}</strong></div>
+                        <div>Format: <strong style="color:#101B35;">{html.escape(doc['file_type'].upper())}</strong></div>
+                        <div>Pages/Layout: <strong style="color:#101B35;">{doc.get('page_count', 0) if doc['file_type'] == 'pdf' else 'DOCX Paras'}</strong></div>
+                        <div>Mode: <strong style="color:#101B35;">{html.escape(doc.get('analysis_mode') or 'Pending')}</strong></div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
             if doc.get("last_error"):
-                st.error(f"Previous run reported an error: {doc['last_error']}")
+                st.error(f"Previous analysis reported an error: {doc['last_error']}")
 
             if doc.get("ocr_required"):
                 st.warning(
-                    "No usable selectable text was detected in this PDF. It appears to be a scanned "
-                    "document; OCR is required (planned as a future enhancement)."
+                    "⚠️ No selectable text detected in this PDF. It appears to be a scanned document. "
+                    "OCR text recognition is required before semantic clause analysis can proceed."
                 )
             else:
-                st.info(
-                    "AI analysis will NOT start automatically. Click **Analyze Contract** below to run "
-                    "clause splitting, classification, risk scoring, RAG template comparison, and PDF report generation."
+                is_analyzed = proc_status == "analyzed"
+                btn_label = "Re-analyze Contract" if is_analyzed else ("Retry Analysis" if proc_status in {"failed", "partially_analyzed"} else "Run AI Contract Analysis")
+
+                st.markdown(
+                    """
+                    <div style="font-size:0.84rem; color:#748094; margin:0.75rem 0 0.5rem 0;">
+                        To respect token quotas and ensure full human control, LegalEase requires explicit user confirmation
+                        to launch the LangGraph multi-stage review (splitting, categorization, risk scoring, benchmark RAG, and PDF generation).
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
                 )
-                btn_label = (
-                    "Retry Contract Analysis"
-                    if proc_status in {"failed", "partially_analyzed"}
-                    else "Analyze Contract"
-                )
+
                 if st.button(btn_label, type="primary", use_container_width=True):
-                    with st.spinner(
-                        "Running LangGraph multi-stage analysis (splitting, classification, "
-                        "risk scoring, FAISS comparison, evidence verification, PDF report)..."
-                    ):
+                    with st.spinner("Executing LangGraph intelligence workflow (clause extraction, Gemini classification, risk scoring, FAISS comparison, and PDF report)..."):
                         try:
-                            result = client.analyze_document(doc["document_id"])
-                            if result.get("fallback_used"):
-                                st.warning(
-                                    f"Analysis completed in `{result.get('analysis_mode')}` mode "
-                                    f"(Gemini status: `{result.get('gemini_status')}` — {result.get('fallback_reason')})."
-                                )
-                            st.success(
-                                f"Analysis complete! Overall Illustrative Risk Score: "
-                                f"**{result['overall_risk_score']}/100 ({result['overall_risk_level'].replace('_', ' ').upper()})**."
-                            )
+                            client.analyze_document(selected_id)
+                            st.success("Analysis complete! Review the findings in the Dashboard or Risk Assessment tab.")
+                            st.rerun()
                         except APIError as exc:
                             st.error(f"Analysis failed: {exc.message}")
-

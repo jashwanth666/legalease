@@ -200,6 +200,8 @@ def _is_document_banner(paragraph: str) -> bool:
     if len(stripped) > 120:
         return False
     lower = stripped.lower()
+    if lower in {"(sample)", "sample", "[draft]", "draft", "(draft)", "(specimen)", "confidential"}:
+        return True
     banner_terms = (
         "non-disclosure agreement",
         "service agreement",

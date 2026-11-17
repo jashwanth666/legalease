@@ -68,6 +68,7 @@ def get_comparisons(document_id: str, db: Session = Depends(get_db)):
                 "recommendation": comp.recommendation or "",
                 "reference_source": comp.reference_source,
                 "similarity_score": comp.similarity_score,
+                "insufficient_evidence": bool(comp.insufficient_evidence),
                 "verified": comp.verified,
                 "illustrative_notice": ILLUSTRATIVE_DEFAULT_NOTICE,
             }

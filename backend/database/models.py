@@ -133,6 +133,7 @@ class Comparison(Base):
     recommendation = Column(Text, nullable=True)
     reference_source = Column(String(255), nullable=False)
     similarity_score = Column(Float, nullable=True)
+    insufficient_evidence = Column(Boolean, default=False, nullable=False)
     verified = Column(Boolean, default=True, nullable=False)
 
     document = relationship("Document", back_populates="comparisons")

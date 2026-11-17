@@ -24,12 +24,15 @@ class LegalEaseAPIClient:
     def __init__(self, base_url: str | None = None, timeout: float | tuple[float, float] = (10.0, 180.0)) -> None:
         self.base_url = (base_url or DEFAULT_API_BASE_URL).rstrip("/")
         self.timeout = timeout
+        self.session = requests.Session()
+        if "127.0.0.1" in self.base_url or "localhost" in self.base_url:
+            self.session.trust_env = False
 
     def _request(self, method: str, path: str, **kwargs) -> requests.Response:
         url = f"{self.base_url}{path}"
         kwargs.setdefault("timeout", self.timeout)
         try:
-            response = requests.request(method, url, **kwargs)
+            response = self.session.request(method, url, **kwargs)
         except requests.Timeout as exc:
             raise APIError(
                 f"Request timed out waiting for LegalEase backend ({path}). Large documents may require more time."

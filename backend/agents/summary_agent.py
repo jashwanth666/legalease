@@ -269,6 +269,13 @@ class SummaryAgent:
             ref_text = (comp.get("reference_clause") or "").strip()
             ref_source = (comp.get("reference_source") or "").strip()
 
+            if comp.get("insufficient_evidence"):
+                comp["verified"] = False
+                comp["verification_note"] = (
+                    "Insufficient reference evidence: retrieved similarity below threshold or empty."
+                )
+                continue
+
             valid = any(
                 r.get("text", "").strip() == ref_text
                 and r.get("reference_source", "").strip() == ref_source

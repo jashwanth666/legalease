@@ -424,6 +424,7 @@ def save_results_node(state: dict[str, Any]) -> dict[str, Any]:
                     recommendation=comp.get("recommendation"),
                     reference_source=comp["reference_source"],
                     similarity_score=comp.get("similarity_score"),
+                    insufficient_evidence=bool(comp.get("insufficient_evidence", False)),
                     verified=bool(comp.get("verified", True)),
                 )
             )

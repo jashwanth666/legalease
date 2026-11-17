@@ -1,28 +1,30 @@
-"""Clause inspection and side-by-side reference comparison components."""
+"""Clause inspection viewer and enterprise side-by-side RAG benchmark comparison components."""
 
 import html
 import streamlit as st
 
 
 def _loc_text(item: dict) -> str:
+    """Safely format location for PDF or DOCX."""
     if item.get("location_type") == "docx_paragraph" or item.get("page_number") is None:
         pidx = item.get("paragraph_index")
-        return f"DOCX Para {pidx}" if pidx else "DOCX"
+        return f"DOCX Para {pidx}" if pidx else "DOCX Paragraph"
     return f"Page {item.get('page_number')}"
 
 
 def render_clause_viewer(clauses: list[dict]) -> None:
-    """Display filterable table and expandable full original text for extracted clauses."""
+    """Display modern filterable search bar and interactive cards for extracted legal clauses."""
     if not clauses:
         st.info("No extracted clauses available for this document.")
         return
 
     categories = sorted({c.get("category", "Other") for c in clauses})
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        chosen_cats = st.multiselect("Filter by Category", categories, default=categories)
-    with col2:
-        search_q = st.text_input("Search Clause Text or Title", "")
+
+    filter_col1, filter_col2 = st.columns([1, 2])
+    with filter_col1:
+        chosen_cats = st.multiselect("Filter by Clause Category", categories, default=categories)
+    with filter_col2:
+        search_q = st.text_input("🔍 Search within Clause Text, Headings, or IDs", "")
 
     filtered = [
         c
@@ -32,92 +34,197 @@ def render_clause_viewer(clauses: list[dict]) -> None:
             not search_q.strip()
             or search_q.lower() in c.get("title", "").lower()
             or search_q.lower() in c.get("original_text", "").lower()
+            or search_q.lower() in c.get("clause_id", "").lower()
         )
     ]
 
-    st.caption(f"Showing {len(filtered)} of {len(clauses)} extracted clauses")
+    st.markdown(
+        f"""
+        <div style="font-size:0.8rem; font-weight:600; color:#748094; margin:0.5rem 0 1rem 0;">
+            Displaying <span style="color:#101B35; font-weight:700;">{len(filtered)}</span> of {len(clauses)} classified clauses
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     for idx, cl in enumerate(filtered):
         source = cl.get("classification_source", "deterministic_fallback")
         conf = cl.get("confidence")
         conf_txt = f"{int(round(conf * 100))}%" if isinstance(conf, (int, float)) else "N/A"
         loc_txt = _loc_text(cl)
         seg_conf = cl.get("segmentation_confidence", "high")
-        seg_flag = " • Uncertain Split" if cl.get("segmentation_uncertain") else ""
-        header = (
-            f"{cl.get('clause_id')} | {cl.get('title')} "
-            f"[{cl.get('category')} • {loc_txt} • Confidence {conf_txt}{seg_flag}]"
+        is_uncertain = cl.get("segmentation_uncertain", False)
+
+        seg_badge = (
+            '<span style="background:#FFF7ED; color:#9A3412; border:1px solid #FED7AA; padding:0.15rem 0.5rem; border-radius:999px; font-size:0.72rem; font-weight:600;">⚠️ Uncertain Split</span>'
+            if is_uncertain
+            else '<span style="background:#ECFDF5; color:#065F46; border:1px solid #A7F3D0; padding:0.15rem 0.5rem; border-radius:999px; font-size:0.72rem; font-weight:600;">✓ Clean Segment</span>'
         )
-        with st.expander(header, expanded=(idx < 2)):
-            st.markdown(f"**Classification Source:** `{source}` | **Segmentation Confidence:** `{seg_conf}`")
+
+        header_label = f"{cl.get('clause_id', 'CL')} • {cl.get('title', 'Untitled')} [{cl.get('category')} • {loc_txt}]"
+
+        with st.expander(header_label, expanded=(idx < 2)):
+            st.markdown(
+                f"""
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; background:#F8FAFC; border:1px solid #E6EAF0; border-radius:8px; padding:0.5rem 0.75rem; margin-bottom:0.75rem;">
+                    <div style="font-size:0.8rem; color:#172033;">
+                        <strong>Category:</strong> <span style="color:#356AE6; font-weight:600;">{html.escape(str(cl.get('category', 'Other')))}</span> &bull;
+                        <strong>Classification:</strong> <code>{html.escape(source)}</code> (Confidence {conf_txt})
+                    </div>
+                    <div>{seg_badge}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
             if cl.get("description"):
-                st.markdown(f"**Summary:** {cl['description']}")
-            st.markdown("**Complete Original Clause Text:**")
+                st.markdown(f"**Clause Synopsis:** {cl['description']}")
+
+            st.markdown(
+                f"""
+                <div style="font-size:0.75rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:#748094; margin-top:0.75rem; margin-bottom:0.25rem;">
+                    Verbatim Contract Text ({loc_txt})
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
             st.code(cl.get("original_text", ""), language=None)
 
 
 def render_side_by_side_comparison(comp: dict, idx: int) -> None:
-    """Display uploaded contract clause next to retrieved illustrative reference clause."""
+    """Display uploaded contract clause alongside retrieved FAISS benchmark reference."""
     cid = comp.get("clause_id", "")
     title = comp.get("clause_title", cid)
     cat = comp.get("category", "Other")
     loc_txt = _loc_text(comp)
     sim = comp.get("similarity_score")
     sim_txt = f"{sim:.2f}" if isinstance(sim, (int, float)) else "N/A"
-    verified_txt = "Verified" if comp.get("verified", True) else "Unverified"
+
+    is_insufficient = comp.get("insufficient_evidence", False)
+    if is_insufficient:
+        badge_html = '<span style="background:#FFFBEB; color:#92400E; border:1px solid #FDE68A; padding:0.2rem 0.6rem; border-radius:999px; font-size:0.74rem; font-weight:700;">⚠️ Insufficient Evidence</span>'
+    elif comp.get("verified", True):
+        badge_html = '<span style="background:#ECFDF5; color:#065F46; border:1px solid #A7F3D0; padding:0.2rem 0.6rem; border-radius:999px; font-size:0.74rem; font-weight:700;">✓ Verified Benchmark</span>'
+    else:
+        badge_html = '<span style="background:#FEF2F2; color:#991B1B; border:1px solid #FECACA; padding:0.2rem 0.6rem; border-radius:999px; font-size:0.74rem; font-weight:700;">⚠️ Unverified</span>'
 
     st.markdown(
         f"""
-        <div class="le-card">
-            <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:0.5rem;">
-                <div><strong>{html.escape(str(cid))}</strong> &mdash; {html.escape(str(title))} ({html.escape(str(cat))}, {html.escape(loc_txt)})</div>
-                <div style="font-size:0.83rem; color:#475569;">
-                    Reference: <strong>{html.escape(str(comp.get('reference_source', '')))}</strong>
-                    &bull; Similarity: <strong>{sim_txt}</strong> &bull; {verified_txt}
+        <div class="le-card" style="border-top:3px solid #356AE6; margin-bottom:1.5rem;">
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; margin-bottom:1rem; padding-bottom:0.75rem; border-bottom:1px solid #F1F4F9;">
+                <div>
+                    <span style="background:#101B35; color:#FFFFFF; font-size:0.75rem; font-weight:700; padding:0.2rem 0.55rem; border-radius:6px; letter-spacing:0.04em; margin-right:0.4rem;">
+                        {html.escape(str(cid))}
+                    </span>
+                    <span style="font-size:1.1rem; font-weight:700; color:#101B35;">
+                        {html.escape(str(title))}
+                    </span>
+                    <span style="font-size:0.8rem; color:#748094; margin-left:0.4rem;">
+                        ({html.escape(str(cat))} &bull; {html.escape(loc_txt)})
+                    </span>
+                </div>
+                <div style="display:flex; align-items:center; gap:0.75rem;">
+                    {badge_html}
+                    <span style="font-size:0.8rem; font-weight:600; color:#101B35; background:#F8FAFC; border:1px solid #E6EAF0; padding:0.25rem 0.65rem; border-radius:6px;">
+                        Semantic Match: <strong>{sim_txt}</strong>
+                    </span>
                 </div>
             </div>
-        </div>
         """,
         unsafe_allow_html=True,
     )
 
     left, right = st.columns(2)
     with left:
-        st.markdown("**Uploaded Contract Clause**")
+        st.markdown(
+            f"""
+            <div style="font-size:0.78rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:#101B35; margin-bottom:0.35rem; display:flex; align-items:center; gap:0.4rem;">
+                <span>📄</span> Uploaded Agreement Clause ({loc_txt})
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         st.text_area(
             f"Uploaded {cid}",
             value=comp.get("uploaded_clause", ""),
-            height=170,
+            height=160,
             disabled=True,
             key=f"cmp_up_{cid}_{idx}",
             label_visibility="collapsed",
         )
+
     with right:
+        ref_source = comp.get("reference_source", "standard_template")
         st.markdown(
-            f"**Illustrative Reference Clause** (`{comp.get('reference_source', 'reference')}`)"
+            f"""
+            <div style="font-size:0.78rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:#356AE6; margin-bottom:0.35rem; display:flex; align-items:center; gap:0.4rem;">
+                <span>⚖️</span> Reference Benchmark (<code>{html.escape(ref_source)}</code>)
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
         st.text_area(
             f"Reference {cid}",
             value=comp.get("reference_clause", ""),
-            height=170,
+            height=160,
             disabled=True,
             key=f"cmp_ref_{cid}_{idx}",
             label_visibility="collapsed",
         )
 
+    # Key Differences, Legal Implications & Recommendations
     diffs = comp.get("differences") or []
-    if diffs:
-        st.markdown("**Key Differences Observed:**")
-        for diff in diffs:
-            st.markdown(f"- {diff}")
-    if comp.get("potential_implications"):
-        st.markdown(f"**Potential Implications:** {comp['potential_implications']}")
-    if comp.get("recommendation"):
-        st.markdown(f"**Suggested Review Point:** {comp['recommendation']}")
-    st.caption(
-        comp.get(
-            "illustrative_notice",
-            "Illustrative reference example only, not a universally applicable legal standard.",
-        )
-    )
-    st.divider()
+    implications = comp.get("potential_implications")
+    recommendation = comp.get("recommendation")
 
+    if diffs or implications or recommendation:
+        st.markdown(
+            """
+            <div style="background:#F8FAFC; border:1px solid #E6EAF0; border-radius:10px; padding:1rem; margin-top:1rem;">
+            """,
+            unsafe_allow_html=True,
+        )
+
+        if diffs:
+            st.markdown(
+                """
+                <div style="font-size:0.78rem; font-weight:700; text-transform:uppercase; color:#101B35; margin-bottom:0.3rem;">
+                    Key Structural & Linguistic Differences
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            for d in diffs:
+                st.markdown(f"- {d}")
+
+        if implications:
+            st.markdown(
+                f"""
+                <div style="margin-top:0.6rem; font-size:0.84rem; color:#7C2D12; background:#FFF7ED; border:1px solid #FED7AA; border-radius:6px; padding:0.5rem 0.75rem;">
+                    <strong>Potential Risk / Implication:</strong> {html.escape(implications)}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        if recommendation:
+            st.markdown(
+                f"""
+                <div style="margin-top:0.5rem; font-size:0.84rem; color:#1E40AF; background:#EFF6FF; border:1px solid #BFDBFE; border-radius:6px; padding:0.5rem 0.75rem;">
+                    <strong>Suggested Drafting Action:</strong> {html.escape(recommendation)}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown(
+        f"""
+        <div style="margin-top:0.5rem; font-size:0.72rem; color:#94A3B8; font-style:italic;">
+            {html.escape(comp.get('illustrative_notice', 'Illustrative reference example only, not a universally applicable legal standard.'))}
+        </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )

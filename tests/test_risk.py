@@ -252,3 +252,35 @@ def test_faiss_rebuilds_when_templates_change(tmp_path):
     assert len(store2.records) == 2
     assert store2.metadata["template_hash"] != hash_before
 
+
+def test_low_quality_rag_retrieval_marked_insufficient_evidence(tmp_path):
+    from pathlib import Path
+    from backend.agents.comparison_agent import ComparisonAgent
+    from backend.retrieval.embeddings import EmbeddingService
+    from backend.retrieval.retriever import TemplateRetriever
+
+    templates_dir = Path(__file__).resolve().parent.parent / "data" / "reference_templates"
+    retriever = TemplateRetriever(
+        vectorstore_dir=tmp_path / "vs_low",
+        templates_dir=templates_dir,
+        embedding_service=EmbeddingService(allow_download=False),
+    )
+    retriever.rebuild()
+
+    agent = ComparisonAgent(retriever=retriever, llm_service=LLMService(api_key=""))
+    comps, _, _ = agent.compare_clauses(
+        [
+            ExtractedClause(
+                clause_id="CL-UNREL",
+                title="Unknown Addendum",
+                category="Other",
+                original_text="zzzzzz xxxxx qqqqqq completely unrelated gibberish text",
+                page_number=1,
+            )
+        ]
+    )
+    assert len(comps) == 1
+    assert comps[0].insufficient_evidence is True
+    assert comps[0].verified is False
+    assert "insufficient evidence" in comps[0].differences[0].lower()
+

@@ -29,6 +29,9 @@ _MIGRATION_COLUMNS: dict[str, dict[str, str]] = {
         "paragraph_index": "INTEGER",
         "section_title": "VARCHAR(255)",
     },
+    "comparisons": {
+        "insufficient_evidence": "BOOLEAN NOT NULL DEFAULT 0",
+    },
 }
 
 

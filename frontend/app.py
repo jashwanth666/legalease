@@ -1,4 +1,4 @@
-"""Main Streamlit application entrypoint registering all 8 LegalEase pages."""
+"""Main Streamlit application entrypoint registering all 8 LegalEase SaaS pages."""
 
 from pathlib import Path
 import sys
@@ -12,23 +12,22 @@ if str(ROOT_DIR) not in sys.path:
 
 
 st.set_page_config(
-    page_title="LegalEase | AI Contract Intelligence",
+    page_title="LegalEase | Enterprise Legal AI",
     page_icon="⚖️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 pages = [
-    st.Page("pages/1_Dashboard.py", title="1. Dashboard", icon="📊", default=True),
-    st.Page("pages/2_Upload_Contract.py", title="2. Upload Contract", icon="📤"),
-    st.Page("pages/Document_Analysis.py", title="3. Document Analysis", icon="📄"),
-    st.Page("pages/3_Risk_Analysis.py", title="4. Risk Assessment", icon="🛡️"),
-    st.Page("pages/4_Clause_Comparison.py", title="5. Clause Comparison", icon="⚖️"),
-    st.Page("pages/Missing_Clauses.py", title="6. Missing Clauses", icon="🧩"),
-    st.Page("pages/5_Reports.py", title="7. Reports", icon="📑"),
-    st.Page("pages/Settings.py", title="8. Settings", icon="⚙️"),
+    st.Page("pages/1_Dashboard.py", title="Dashboard", icon="📊", default=True),
+    st.Page("pages/2_Upload_Contract.py", title="Upload Contract", icon="📤"),
+    st.Page("pages/Document_Analysis.py", title="Document Analysis", icon="📄"),
+    st.Page("pages/3_Risk_Analysis.py", title="Risk Assessment", icon="🛡️"),
+    st.Page("pages/4_Clause_Comparison.py", title="Clause Comparison", icon="⚖️"),
+    st.Page("pages/Missing_Clauses.py", title="Missing Clauses", icon="🧩"),
+    st.Page("pages/5_Reports.py", title="Reports", icon="📑"),
+    st.Page("pages/Settings.py", title="Settings", icon="⚙️"),
 ]
 
 nav = st.navigation(pages)
 nav.run()
-
