@@ -16,6 +16,7 @@ _MIGRATION_COLUMNS: dict[str, dict[str, str]] = {
         "fallback_reason": "TEXT",
         "last_error": "TEXT",
         "embedding_backend": "VARCHAR(64)",
+        "metadata_json": "TEXT",
     },
     "clauses": {
         "end_page_number": "INTEGER",

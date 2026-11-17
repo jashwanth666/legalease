@@ -6,6 +6,11 @@ from backend.schemas.clause import (
     GeminiBatchClassification,
     GeminiSingleClassification,
 )
+from backend.schemas.metadata import (
+    ContractMetadata,
+    GeminiContractMetadataExtraction,
+    MetadataItem,
+)
 from backend.schemas.report import (
     DeleteDocumentResponse,
     DocumentDetailResponse,
@@ -28,6 +33,7 @@ __all__ = [
     "ALL_CLAUSE_CATEGORIES",
     "CLAUSE_CATEGORIES",
     "ClauseClassification",
+    "ContractMetadata",
     "DeleteDocumentResponse",
     "DocumentDetailResponse",
     "DocumentSummary",
@@ -36,9 +42,11 @@ __all__ = [
     "FindingType",
     "GeminiBatchClassification",
     "GeminiBatchRiskAssessment",
+    "GeminiContractMetadataExtraction",
     "GeminiSingleClassification",
     "GeminiSingleRiskAssessment",
     "HealthResponse",
+    "MetadataItem",
     "RiskFactorInputs",
     "RiskFinding",
     "RiskLevel",

@@ -83,6 +83,9 @@ class LegalEaseAPIClient:
     def get_clauses(self, document_id: str) -> dict[str, Any]:
         return self._request("GET", f"/api/clauses/{document_id}").json()
 
+    def get_metadata(self, document_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/api/metadata/{document_id}").json()
+
     def get_comparisons(self, document_id: str) -> dict[str, Any]:
         return self._request("GET", f"/api/compare/{document_id}").json()
 

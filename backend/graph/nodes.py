@@ -8,6 +8,7 @@ from typing import Any
 from backend.agents.classification_agent import ClassificationAgent
 from backend.agents.comparison_agent import ComparisonAgent
 from backend.agents.extraction_agent import ExtractionAgent
+from backend.agents.metadata_agent import MetadataAgent
 from backend.agents.risk_agent import RiskAgent
 from backend.agents.summary_agent import SummaryAgent, detect_contract_type
 from backend.config import get_settings
@@ -272,6 +273,31 @@ def missing_clause_detection_node(state: dict[str, Any]) -> dict[str, Any]:
         return {"processing_errors": [f"Missing clause detection failed ({type(exc).__name__}): {exc}"]}
 
 
+async def extract_metadata_node(state: dict[str, Any]) -> dict[str, Any]:
+    """Extract structured 16-field contract metadata with grounded evidence."""
+    try:
+        cfg = _resolve_runtime_paths(state)
+        llm = LLMService(api_key=cfg["api_key"], model_name=cfg["model_name"])
+        agent = MetadataAgent(llm_service=llm)
+        metadata = await agent.aextract_metadata(
+            full_text=state.get("extracted_text", ""),
+            clauses=state.get("clauses", []),
+            document_id=state.get("document_id", ""),
+            filename=state.get("filename", ""),
+        )
+        telemetry = {
+            **agent.last_run_meta,
+            "stage": "metadata_extraction",
+        }
+        return {
+            "contract_metadata": metadata.to_dict(),
+            "llm_telemetry": [telemetry],
+        }
+    except Exception as exc:
+        logger.exception("Metadata extraction failed for document_id=%s", state.get("document_id"))
+        return {"processing_errors": [f"Metadata extraction failed ({type(exc).__name__}): {exc}"]}
+
+
 def merge_results_node(state: dict[str, Any]) -> dict[str, Any]:
     """Synchronize parallel branch outputs and summarize Gemini fallback/telemetry state."""
     sources = set()
@@ -281,6 +307,9 @@ def merge_results_node(state: dict[str, Any]) -> dict[str, Any]:
         sources.add(r.get("analysis_source", "deterministic_fallback"))
     for comp in state.get("comparison_results", []):
         sources.add(comp.get("analysis_source", "deterministic_fallback"))
+    meta = state.get("contract_metadata") or {}
+    if meta.get("extraction_source"):
+        sources.add(meta["extraction_source"])
 
     if sources == {"gemini"}:
         mode = "gemini"
@@ -308,11 +337,12 @@ def merge_results_node(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def verify_evidence_node(state: dict[str, Any]) -> dict[str, Any]:
-    """Verify every risk finding, comparison, and missing clause against source evidence."""
+    """Verify every risk finding, comparison, missing clause, and metadata item against source evidence."""
     try:
         risk_results = list(state.get("risk_results", []))
         comparison_results = list(state.get("comparison_results", []))
         missing_clauses = dict(state.get("missing_clauses", {}))
+        contract_metadata = dict(state.get("contract_metadata", {}))
 
         verification = SummaryAgent.verify_evidence(
             pages=state.get("pages", []),
@@ -322,11 +352,14 @@ def verify_evidence_node(state: dict[str, Any]) -> dict[str, Any]:
             retrieved_references=state.get("retrieved_references", {}),
             comparison_results=comparison_results,
             missing_clauses=missing_clauses,
+            contract_metadata=contract_metadata,
+            extracted_text=state.get("extracted_text", ""),
         )
         return {
             "risk_results": risk_results,
             "comparison_results": comparison_results,
             "missing_clauses": missing_clauses,
+            "contract_metadata": contract_metadata,
             "verified_findings": verification,
         }
     except Exception as exc:
@@ -480,6 +513,9 @@ def save_results_node(state: dict[str, Any]) -> dict[str, Any]:
         doc.executive_summary = state.get("final_summary")
         doc.missing_clauses_json = json.dumps(
             state.get("missing_clauses", {}), ensure_ascii=False
+        )
+        doc.metadata_json = json.dumps(
+            state.get("contract_metadata", {}), ensure_ascii=False
         )
         doc.analysis_mode = state.get("analysis_mode", "deterministic_fallback")
         doc.gemini_status = state.get("gemini_status", "missing_key")

@@ -10,6 +10,7 @@ from backend.graph.nodes import (
     calculate_overview_node,
     classify_clauses_node,
     extract_document_text_node,
+    extract_metadata_node,
     generate_pdf_node,
     generate_summary_node,
     merge_results_node,
@@ -55,7 +56,12 @@ def _route_after_splitting(state: LegalEaseState) -> str:
 def _route_after_classification(state: LegalEaseState) -> list[str]:
     if state.get("processing_errors"):
         return [END]
-    return ["risk_assessment", "rag_template_comparison", "missing_clause_detection"]
+    return [
+        "risk_assessment",
+        "rag_template_comparison",
+        "missing_clause_detection",
+        "extract_metadata",
+    ]
 
 
 def _route_after_errors(state: LegalEaseState) -> str:
@@ -83,6 +89,7 @@ def build_legalease_workflow():
     graph.add_node("risk_assessment", risk_assessment_node)
     graph.add_node("rag_template_comparison", rag_template_comparison_node)
     graph.add_node("missing_clause_detection", missing_clause_detection_node)
+    graph.add_node("extract_metadata", extract_metadata_node)
 
     graph.add_node("merge_results", merge_results_node)
     graph.add_node("verify_evidence", verify_evidence_node)
@@ -120,6 +127,7 @@ def build_legalease_workflow():
     graph.add_edge("risk_assessment", "merge_results")
     graph.add_edge("rag_template_comparison", "merge_results")
     graph.add_edge("missing_clause_detection", "merge_results")
+    graph.add_edge("extract_metadata", "merge_results")
 
     graph.add_conditional_edges(
         "merge_results",

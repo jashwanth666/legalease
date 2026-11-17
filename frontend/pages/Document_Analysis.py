@@ -112,9 +112,9 @@ if proc_status == "analyzed":
         if st.button("🛡️ Jump to Risk Assessment →", use_container_width=True):
             st.switch_page("pages/3_Risk_Analysis.py")
 
-# Modern Tabs for Executive Summary, Classified Clauses, and Raw Pages
-tab_summary, tab_clauses, tab_pages = st.tabs(
-    ["📋 Executive Legal Summary", "⚖️ Classified Clauses", "📄 Raw Page Source Text"]
+# Modern Tabs for Executive Summary, Contract Metadata, Classified Clauses, and Raw Pages
+tab_summary, tab_metadata, tab_clauses, tab_pages = st.tabs(
+    ["📋 Executive Legal Summary", "🔍 Contract Metadata", "⚖️ Classified Clauses", "📄 Raw Page Source Text"]
 )
 
 with tab_summary:
@@ -153,6 +153,96 @@ with tab_summary:
             st.error(exc.message)
     else:
         st.info("Executive summary will be generated once contract analysis is run.")
+
+with tab_metadata:
+    if proc_status in ("analyzed", "partially_analyzed"):
+        try:
+            meta_resp = client.get_metadata(selected_id)
+            meta_data = meta_resp.get("metadata") or {}
+            if not meta_data:
+                st.info("No structured metadata is recorded for this document.")
+            else:
+                source = meta_data.get("extraction_source", "deterministic_fallback")
+                completeness = meta_data.get("completeness_score", 0.0)
+                source_badge = "🤖 Gemini AI Extraction" if source == "gemini" else "⚙️ Deterministic Heuristic Extraction"
+
+                st.markdown(
+                    f"""
+                    <div style="background:#F8FAFC; border:1px solid #E6EAF0; border-radius:10px; padding:0.75rem 1rem; margin-bottom:1.25rem; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
+                        <div style="font-size:0.85rem; color:#475569;">
+                            Extraction Engine: <strong style="color:#101B35;">{html.escape(source_badge)}</strong>
+                        </div>
+                        <div style="font-size:0.85rem; color:#475569;">
+                            Completeness Score: <strong style="color:#0EA5E9;">{int(completeness * 100)}%</strong>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                field_display_names = [
+                    ("contract_title_and_type", "Contract Title & Type"),
+                    ("party_names_and_roles", "Parties & Roles"),
+                    ("effective_date", "Effective Date"),
+                    ("expiration_date", "Expiration Date"),
+                    ("contract_duration", "Contract Duration"),
+                    ("renewal_date_and_conditions", "Renewal Terms"),
+                    ("contract_value", "Contract Value"),
+                    ("payment_terms", "Payment Terms"),
+                    ("governing_law_and_jurisdiction", "Governing Law"),
+                    ("notice_period", "Notice Period"),
+                    ("termination_conditions", "Termination Conditions"),
+                    ("liability_limitations", "Liability Limitations"),
+                    ("indemnification_terms", "Indemnification Terms"),
+                    ("deliverables_and_responsibilities", "Key Deliverables"),
+                    ("confidentiality_period", "Confidentiality Period"),
+                    ("dispute_resolution_method", "Dispute Resolution"),
+                ]
+
+                col1, col2 = st.columns(2)
+                for idx, (fkey, flabel) in enumerate(field_display_names):
+                    target_col = col1 if idx % 2 == 0 else col2
+                    fval = meta_data.get(fkey) or {}
+                    val_text = fval.get("value")
+                    is_missing = fval.get("is_missing", False) or val_text is None
+                    is_verified = fval.get("verified", False)
+                    quote = fval.get("source_quote")
+                    page_no = fval.get("page_number")
+                    para_no = fval.get("paragraph_index")
+                    loc_str = f"Page {page_no}" if page_no else (f"DOCX Para {para_no}" if para_no else None)
+
+                    with target_col:
+                        with st.container(border=True):
+                            top_col1, top_col2 = st.columns([2, 1])
+                            with top_col1:
+                                st.caption(flabel)
+                            with top_col2:
+                                if is_missing:
+                                    st.markdown("<span style='font-size:0.75rem; color:#94A3B8; float:right;'>⚪ Missing</span>", unsafe_allow_html=True)
+                                elif is_verified:
+                                    st.markdown("<span style='font-size:0.75rem; color:#16A36A; font-weight:700; float:right;'>🟢 Verified</span>", unsafe_allow_html=True)
+                                else:
+                                    st.markdown("<span style='font-size:0.75rem; color:#D97706; font-weight:700; float:right;'>🟡 Unverified</span>", unsafe_allow_html=True)
+
+                            if is_missing:
+                                st.markdown("<em style='color:#94A3B8; font-size:0.85rem;'>Not specified in contract</em>", unsafe_allow_html=True)
+                            else:
+                                if isinstance(val_text, list):
+                                    st.markdown(f"**{', '.join(str(v) for v in val_text)}**")
+                                else:
+                                    st.markdown(f"**{val_text}**")
+
+                            if loc_str:
+                                st.markdown(f"<span style='font-size:0.72rem; color:#64748B;'>📍 {loc_str}</span>", unsafe_allow_html=True)
+
+                            if quote:
+                                with st.expander("📖 Verbatim Evidence Quote"):
+                                    st.caption(f'"{html.escape(quote)}"')
+        except APIError as exc:
+            st.error(exc.message)
+    else:
+        st.info("Run contract analysis above to extract and verify structured contract metadata.")
+
 
 with tab_clauses:
     if proc_status == "analyzed":

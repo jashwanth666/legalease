@@ -42,6 +42,7 @@ class Document(Base):
     overall_risk_level = Column(String(32), nullable=True)
     executive_summary = Column(Text, nullable=True)
     missing_clauses_json = Column(Text, nullable=True)
+    metadata_json = Column(Text, nullable=True)
     analysis_mode = Column(String(32), nullable=True)
     gemini_status = Column(String(32), nullable=True)
     fallback_used = Column(Boolean, default=False, nullable=False)

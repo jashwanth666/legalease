@@ -102,6 +102,13 @@ def _build_analysis_payload(doc: Document, db: Session) -> dict[str, Any]:
         except json.JSONDecodeError:
             missing_clauses = {}
 
+    contract_metadata = {}
+    if doc.metadata_json:
+        try:
+            contract_metadata = json.loads(doc.metadata_json)
+        except json.JSONDecodeError:
+            contract_metadata = {}
+
     overall_score = doc.overall_risk_score if doc.overall_risk_score is not None else 0.0
     overall_level = doc.overall_risk_level or (
         "no_notable_risk" if scored_clauses == 0 else classify_risk_level(overall_score)
@@ -140,6 +147,7 @@ def _build_analysis_payload(doc: Document, db: Session) -> dict[str, Any]:
         "executive_summary": doc.executive_summary or "",
         "risk_findings": risk_items,
         "missing_clauses": missing_clauses,
+        "contract_metadata": contract_metadata,
         "comparison_count": len(comparisons),
         "report_available": report is not None and doc.processing_status == "analyzed",
         "report_path": report.report_path if report else "",
@@ -382,4 +390,36 @@ def get_clauses(document_id: str, db: Session = Depends(get_db)):
             for c in clauses
         ],
     }
+
+
+@router.get("/metadata/{document_id}")
+def get_contract_metadata(document_id: str, db: Session = Depends(get_db)):
+    """Retrieve structured 16-field contract metadata with grounded evidence."""
+    doc = db.query(Document).filter(Document.document_id == document_id).first()
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document '{document_id}' not found.",
+        )
+
+    if doc.processing_status not in ("analyzed", "partially_analyzed"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Document '{document_id}' has not been analyzed yet (status: {doc.processing_status}).",
+        )
+
+    metadata = {}
+    if doc.metadata_json:
+        try:
+            metadata = json.loads(doc.metadata_json)
+        except json.JSONDecodeError:
+            metadata = {}
+
+    return {
+        "document_id": doc.document_id,
+        "filename": doc.filename,
+        "contract_type": doc.detected_contract_type,
+        "metadata": metadata,
+    }
+
 

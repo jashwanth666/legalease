@@ -24,6 +24,7 @@ class LegalEaseState(TypedDict, total=False):
     retrieved_references: dict[str, list[dict[str, Any]]]
     comparison_results: list[dict[str, Any]]
     missing_clauses: dict[str, Any]
+    contract_metadata: dict[str, Any]
     verified_findings: dict[str, Any]
     final_summary: str
     overall_risk_score: float

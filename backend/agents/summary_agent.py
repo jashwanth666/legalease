@@ -214,8 +214,10 @@ class SummaryAgent:
         retrieved_references: dict[str, list[dict[str, Any]]],
         comparison_results: list[dict[str, Any]],
         missing_clauses: dict[str, Any],
+        contract_metadata: dict[str, Any] | None = None,
+        extracted_text: str = "",
     ) -> dict[str, Any]:
-        """Verify risk findings, template comparisons, and missing clauses against source evidence."""
+        """Verify risk findings, template comparisons, missing clauses, and metadata against source evidence."""
         clause_map = {c["clause_id"]: c for c in clauses}
         pdf_pages = [int(p["page_number"]) for p in pages if p.get("page_number") is not None]
         max_page = max(pdf_pages, default=1)
@@ -301,11 +303,35 @@ class SummaryAgent:
             verified_missing.append(item)
         missing_clauses["missing_categories"] = verified_missing
 
+        verified_metadata_count = 0
+        if contract_metadata and isinstance(contract_metadata, dict):
+            for k, val in contract_metadata.items():
+                if not isinstance(val, dict) or k in ("document_id", "extraction_source", "completeness_score"):
+                    continue
+                quote = (val.get("source_quote") or "").strip()
+                has_val = val.get("value") is not None
+                is_missing = val.get("is_missing", False)
+                if has_val and quote:
+                    quote_matched = (
+                        (bool(extracted_text) and quote.lower() in extracted_text.lower())
+                        or any(quote.lower() in c.get("original_text", "").lower() for c in clauses)
+                    )
+                    val["verified"] = quote_matched
+                    if quote_matched:
+                        verified_metadata_count += 1
+                    else:
+                        unverified_count += 1
+                        val["notes"] = "Source quote could not be matched verbatim in contract text."
+                        verification_notes.append(f"Metadata field '{k}' marked unverified.")
+                elif is_missing:
+                    val["verified"] = False
+
         return {
             "all_verified": unverified_count == 0,
             "unverified_count": unverified_count,
             "verified_risk_count": sum(1 for r in risk_results if r.get("verified")),
             "verified_comparison_count": sum(1 for c in comparison_results if c.get("verified")),
+            "verified_metadata_count": verified_metadata_count,
             "notes": verification_notes,
         }
 
