@@ -203,9 +203,12 @@ def _validate_docx_bytes(content: bytes) -> int:
     return 0
 
 
-def resolve_contained_path(base_dir: Path, target_path: Path) -> Path:
-    """Verify target_path stays strictly inside base_dir after symlink/path resolution."""
-    base_resolved = base_dir.resolve()
+def resolve_contained_path(
+    base_dir: Path, target_path: Path, tenant_id: str | None = None
+) -> Path:
+    """Verify target_path stays strictly inside base_dir (or base_dir/tenant_id) after symlink/path resolution."""
+    effective_base = (base_dir / tenant_id) if tenant_id else base_dir
+    base_resolved = effective_base.resolve()
     target_resolved = target_path.resolve()
     if not target_resolved.is_relative_to(base_resolved):
         raise DocumentValidationError(
@@ -215,9 +218,11 @@ def resolve_contained_path(base_dir: Path, target_path: Path) -> Path:
     return target_resolved
 
 
-def safe_delete_file(base_dir: Path, target_path: Path) -> bool:
-    """Safely delete a file only if it resolves strictly inside base_dir."""
-    resolved = resolve_contained_path(base_dir, target_path)
+def safe_delete_file(
+    base_dir: Path, target_path: Path, tenant_id: str | None = None
+) -> bool:
+    """Safely delete a file only if it resolves strictly inside base_dir or tenant subfolder."""
+    resolved = resolve_contained_path(base_dir, target_path, tenant_id=tenant_id)
     if resolved.exists() and resolved.is_file():
         resolved.unlink(missing_ok=True)
         return True

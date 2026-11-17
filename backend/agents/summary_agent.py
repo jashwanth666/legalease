@@ -371,6 +371,111 @@ class SummaryAgent:
             "deterministic_fallback",
         )
 
+    async def agenerate_summary(
+        self,
+        filename: str,
+        contract_type: str,
+        overview: RiskOverview,
+        risk_results: list[dict[str, Any]],
+        comparison_results: list[dict[str, Any]],
+        missing_clauses: dict[str, Any],
+        fallback_reason: str | None = None,
+    ) -> tuple[str, str]:
+        """Asynchronously generate plain-English executive summary from verified findings."""
+        verified_risks = [r for r in risk_results if r.get("verified", True)]
+        verified_comparisons = [c for c in comparison_results if c.get("verified", True)]
+
+        if self.llm_service.is_available:
+            try:
+                summary_text = await self._agenerate_with_gemini(
+                    filename, contract_type, overview, verified_risks, verified_comparisons, missing_clauses
+                )
+                self.last_run_meta = {
+                    "gemini_status": "ok",
+                    "fallback_used": False,
+                    "fallback_reason": None,
+                }
+                return summary_text, "gemini"
+            except (LLMUnavailableError, LLMInvocationError) as exc:
+                self.last_run_meta = {
+                    "gemini_status": exc.status_label,
+                    "fallback_used": True,
+                    "fallback_reason": exc.reason,
+                }
+                fallback_reason = fallback_reason or exc.reason
+            except Exception as exc:
+                status_label, reason = classify_llm_exception(exc)
+                logger.warning("Gemini async summary generation failed (%s); using fallback", status_label)
+                self.last_run_meta = {
+                    "gemini_status": status_label,
+                    "fallback_used": True,
+                    "fallback_reason": reason,
+                }
+                fallback_reason = fallback_reason or reason
+        else:
+            self.last_run_meta = {
+                "gemini_status": "missing_key",
+                "fallback_used": True,
+                "fallback_reason": fallback_reason or "Gemini API key is not configured.",
+            }
+            fallback_reason = fallback_reason or "Gemini API key is not configured."
+
+        return (
+            self._generate_deterministic_summary(
+                filename,
+                contract_type,
+                overview,
+                verified_risks,
+                verified_comparisons,
+                missing_clauses,
+                fallback_reason=fallback_reason,
+            ),
+            "deterministic_fallback",
+        )
+
+    async def _agenerate_with_gemini(
+        self,
+        filename: str,
+        contract_type: str,
+        overview: RiskOverview,
+        risk_results: list[dict[str, Any]],
+        comparison_results: list[dict[str, Any]],
+        missing_clauses: dict[str, Any],
+    ) -> str:
+        top_risks = sorted(
+            risk_results,
+            key=lambda r: (r.get("risk_score") if r.get("risk_score") is not None else -1.0),
+            reverse=True,
+        )[:5]
+        risk_lines = [
+            f"- {r['clause_id']} ({_format_location_label(r)}, {str(r['risk_level']).upper()}"
+            + (f" {r['risk_score']}/100" if r.get("risk_score") is not None else "")
+            + f"): {r['risk_title']} — {wrap_untrusted_contract_text(r['explanation'])}"
+            for r in top_risks
+        ]
+        comp_lines = [
+            f"- {c['clause_id']} vs {c['reference_source']}: {'; '.join(c.get('differences', []))}"
+            for c in comparison_results[:5]
+        ]
+        missing_lines = [
+            f"- {m['category']} ({m['status']}): {m['explanation']}"
+            for m in missing_clauses.get("missing_categories", [])
+        ]
+
+        user_prompt = (
+            f"Document: {filename}\n"
+            f"Detected Type: {contract_type}\n"
+            f"Illustrative Overall Risk Score: {overview.overall_risk_score}/100 ({overview.overall_risk_level.upper()})\n"
+            f"Clause Counts: Critical={overview.critical_count}, High={overview.high_count}, "
+            f"Medium={overview.medium_count}, Low={overview.low_count}, "
+            f"Uncertain={overview.uncertain_count}, NoNotablePattern={overview.no_notable_risk_count}\n\n"
+            f"Verified Risk Findings:\n{chr(10).join(risk_lines) or 'None'}\n\n"
+            f"Verified Template Differences:\n{chr(10).join(comp_lines) or 'None'}\n\n"
+            f"Missing Categories:\n{chr(10).join(missing_lines) or 'None detected'}\n"
+        )
+        body = await self.llm_service.ainvoke_text(SUMMARY_SYSTEM_PROMPT, user_prompt)
+        return f"{body}\n\nDisclaimer: {LEGAL_DISCLAIMER}"
+
     def _generate_with_gemini(
         self,
         filename: str,

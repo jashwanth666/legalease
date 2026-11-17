@@ -167,10 +167,32 @@ def render_upload_workflow(client: LegalEaseAPIClient) -> None:
                 )
 
                 if st.button(btn_label, type="primary", use_container_width=True):
-                    with st.spinner("Executing LangGraph intelligence workflow (clause extraction, Gemini classification, risk scoring, FAISS comparison, and PDF report)..."):
-                        try:
-                            client.analyze_document(selected_id)
-                            st.success("Analysis complete! Review the findings in the Dashboard or Risk Assessment tab.")
-                            st.rerun()
-                        except APIError as exc:
-                            st.error(f"Analysis failed: {exc.message}")
+                    progress_bar = st.progress(0.1, text="Queuing contract intelligence pipeline...")
+                    try:
+                        client.analyze_document(selected_id)
+                        import time
+                        max_wait_seconds = 120
+                        start_time = time.time()
+                        while time.time() - start_time < max_wait_seconds:
+                            time.sleep(1.5)
+                            status_data = client.get_status(selected_id)
+                            curr_status = status_data.get("processing_status", "processing")
+                            curr_pct = float(status_data.get("progress_percent", 50)) / 100.0
+                            stage_desc = status_data.get("stage", "Analyzing contract...")
+                            progress_bar.progress(min(max(curr_pct, 0.1), 1.0), text=f"Stage: {stage_desc}")
+
+                            if curr_status == "analyzed":
+                                progress_bar.progress(1.0, text="Analysis complete!")
+                                st.success("Analysis complete! Review the findings in the Dashboard or Risk Assessment tab.")
+                                st.rerun()
+                                break
+                            elif curr_status in {"failed", "partially_analyzed"}:
+                                err = status_data.get("last_error") or "Analysis completed with warnings or failures."
+                                if curr_status == "partially_analyzed":
+                                    st.warning(f"Analysis partially completed: {err}")
+                                else:
+                                    st.error(f"Analysis failed: {err}")
+                                st.rerun()
+                                break
+                    except APIError as exc:
+                        st.error(f"Analysis failed: {exc.message}")

@@ -1,5 +1,6 @@
 """RAG template comparison agent comparing uploaded clauses against FAISS reference clauses."""
 
+import asyncio
 import logging
 import re
 from typing import Any, Iterable
@@ -188,6 +189,202 @@ class ComparisonAgent:
             "embedding_label": self.retriever.store.embedding_service.embedding_label,
         }
         return comparisons, retrieved_map, mode
+
+    async def acompare_clauses(
+        self,
+        clauses: Iterable[ExtractedClause],
+        classifications: Iterable[ClauseClassification] | None = None,
+        contract_type: str | None = None,
+    ) -> tuple[list[ClauseComparisonResult], dict[str, list[dict[str, Any]]], str]:
+        """Asynchronously compare clauses against reference templates using batched concurrency."""
+        clause_list = list(clauses)
+        class_map = {c.clause_id: c for c in (classifications or [])}
+        retrieved_map: dict[str, list[dict[str, Any]]] = {}
+        comparisons: list[ClauseComparisonResult] = []
+        matched_pairs: list[tuple[ExtractedClause, str, dict[str, Any]]] = []
+
+        for clause in clause_list:
+            cls = class_map.get(clause.clause_id)
+            category = cls.category if cls else clause.category
+            matches = self.retriever.retrieve_for_clause(
+                clause_text=clause.original_text,
+                category=category,
+                contract_type=contract_type,
+                top_k=2,
+            )
+            retrieved_map[clause.clause_id] = matches
+            if not matches:
+                if self.retriever.store.records:
+                    comparisons.append(self._insufficient_evidence_result(clause, category, None))
+                continue
+
+            best = matches[0]
+            if float(best.get("similarity_score", 0.0)) < LOW_SIMILARITY_THRESHOLD:
+                comparisons.append(self._insufficient_evidence_result(clause, category, best))
+                continue
+
+            matched_pairs.append((clause, category, best))
+
+        if not self.llm_service.is_available or not matched_pairs:
+            for clause, category, reference in matched_pairs:
+                comparisons.append(
+                    self._compare_deterministic(
+                        clause,
+                        category,
+                        reference,
+                        analysis_source="ai_unavailable" if not self.llm_service.is_available else "deterministic_fallback",
+                        fallback_reason="Gemini API key is not configured." if not self.llm_service.is_available else None,
+                    )
+                )
+            order_map = {c.clause_id: idx for idx, c in enumerate(clause_list)}
+            comparisons.sort(key=lambda item: order_map.get(item.clause_id, 9999))
+            self.last_run_meta = {
+                "gemini_status": "missing_key" if not self.llm_service.is_available else "ok",
+                "fallback_used": not self.llm_service.is_available,
+                "fallback_reason": "Gemini API key is not configured." if not self.llm_service.is_available else None,
+                "embedding_backend": self.retriever.store.embedding_service.backend_name,
+                "embedding_label": self.retriever.store.embedding_service.embedding_label,
+            }
+            mode = "deterministic_fallback" if not self.llm_service.is_available else "gemini"
+            return comparisons, retrieved_map, mode
+
+        batches = [
+            matched_pairs[start : start + self.batch_size]
+            for start in range(0, len(matched_pairs), self.batch_size)
+        ]
+        sem = asyncio.Semaphore(3)
+
+        async def _run_batch(batch: list[tuple[ExtractedClause, str, dict[str, Any]]]):
+            async with sem:
+                try:
+                    res, part = await self._acompare_batch_with_gemini(batch)
+                    return res, part, True, False, "ok", None
+                except (LLMUnavailableError, LLMInvocationError) as exc:
+                    src = "ai_unavailable" if exc.status_label in {"missing_key", "dependency_missing"} else "deterministic_fallback"
+                    fb = [
+                        self._compare_deterministic(
+                            clause,
+                            category,
+                            reference,
+                            analysis_source=src,
+                            fallback_reason=exc.reason,
+                        )
+                        for clause, category, reference in batch
+                    ]
+                    return fb, True, False, True, exc.status_label, exc.reason
+                except Exception as exc:
+                    status_label, reason = classify_llm_exception(exc)
+                    fb = [
+                        self._compare_deterministic(
+                            clause,
+                            category,
+                            reference,
+                            analysis_source="deterministic_fallback",
+                            fallback_reason=reason,
+                        )
+                        for clause, category, reference in batch
+                    ]
+                    return fb, True, False, True, status_label, reason
+
+        batch_outputs = await asyncio.gather(*(_run_batch(b) for b in batches))
+
+        used_gemini = False
+        used_fallback = False
+        last_status = "ok"
+        reasons: list[str] = []
+
+        for b_comps, b_partial, b_used_gemini, b_used_fallback, b_status, b_reason in batch_outputs:
+            comparisons.extend(b_comps)
+            if b_used_gemini:
+                used_gemini = True
+            if b_used_fallback or b_partial:
+                used_fallback = True
+            if b_status != "ok":
+                last_status = b_status
+            if b_reason:
+                reasons.append(b_reason)
+            elif b_partial:
+                reasons.append("Gemini omitted one or more clause IDs from comparison batch output.")
+
+        order_map = {c.clause_id: idx for idx, c in enumerate(clause_list)}
+        comparisons.sort(key=lambda item: order_map.get(item.clause_id, 9999))
+
+        mode = (
+            "gemini"
+            if (used_gemini and not used_fallback)
+            else ("hybrid_fallback" if used_gemini else "deterministic_fallback")
+        )
+        self.last_run_meta = {
+            "gemini_status": last_status if used_fallback else "ok",
+            "fallback_used": used_fallback,
+            "fallback_reason": "; ".join(dict.fromkeys(reasons)) if (used_fallback and reasons) else None,
+            "embedding_backend": self.retriever.store.embedding_service.backend_name,
+            "embedding_label": self.retriever.store.embedding_service.embedding_label,
+        }
+        return comparisons, retrieved_map, mode
+
+    async def _acompare_batch_with_gemini(
+        self, batch: list[tuple[ExtractedClause, str, dict[str, Any]]]
+    ) -> tuple[list[ClauseComparisonResult], bool]:
+        sections = []
+        for clause, category, reference in batch:
+            fenced_uploaded = wrap_untrusted_contract_text(clause.original_text)
+            sections.append(
+                f"Clause ID: {clause.clause_id} | Category: {category}\n"
+                f"Uploaded Clause:\n{fenced_uploaded}\n\n"
+                f"Retrieved Reference Clause (Source: {reference['reference_source']}, "
+                f"Jurisdiction: {reference['jurisdiction']}):\n{reference['text']}"
+            )
+        user_prompt = (
+            "Compare each uploaded clause against its retrieved illustrative reference clause and return "
+            "structured comparisons keyed by Clause ID.\n\n"
+            + "\n\n===\n\n".join(sections)
+        )
+        parsed = await self.llm_service.ainvoke_structured(
+            system_prompt=COMPARISON_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            schema=GeminiBatchComparison,
+        )
+        by_id = {item.clause_id: item for item in parsed.comparisons}
+        results: list[ClauseComparisonResult] = []
+        partial_fb = False
+        for clause, category, reference in batch:
+            item = by_id.get(clause.clause_id)
+            if item is None:
+                partial_fb = True
+                results.append(
+                    self._compare_deterministic(
+                        clause,
+                        category,
+                        reference,
+                        analysis_source="deterministic_fallback",
+                        fallback_reason="Gemini omitted clause ID from comparison batch output.",
+                    )
+                )
+                continue
+
+            results.append(
+                ClauseComparisonResult(
+                    clause_id=clause.clause_id,
+                    clause_title=clause.title,
+                    category=category,
+                    page_number=clause.page_number,
+                    location_type=clause.location_type,
+                    paragraph_index=clause.paragraph_index,
+                    section_title=clause.section_title,
+                    uploaded_clause=clause.original_text,
+                    reference_source=reference["reference_source"],
+                    reference_clause=reference["text"],
+                    similarity_score=float(reference.get("similarity_score", 0.0)),
+                    jurisdiction=reference.get("jurisdiction", "General"),
+                    differences=[d.strip() for d in item.differences if d.strip()],
+                    potential_implications=item.potential_implications.strip(),
+                    recommendation=item.recommendation.strip(),
+                    comparison_source="gemini",
+                    insufficient_evidence=False,
+                )
+            )
+        return results, partial_fb
 
     def _compare_batch_with_gemini(
         self, batch: list[tuple[ExtractedClause, str, dict[str, Any]]]

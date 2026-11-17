@@ -1,5 +1,6 @@
 """Risk assessment agent combining Gemini/fallback factor analysis with Python scoring."""
 
+import asyncio
 import logging
 import re
 from typing import Iterable
@@ -147,6 +148,192 @@ class RiskAgent:
             "fallback_reason": "; ".join(dict.fromkeys(reasons)) if reasons else None,
         }
         return findings, mode
+
+    async def aassess_clauses(
+        self,
+        clauses: Iterable[ExtractedClause],
+        classifications: Iterable[ClauseClassification] | None = None,
+    ) -> tuple[list[RiskFinding], str]:
+        """Asynchronously assess clause risks using batched concurrency with asyncio.gather()."""
+        clause_list = list(clauses)
+        if not clause_list:
+            available = self.llm_service.is_available
+            self.last_run_meta = {
+                "gemini_status": "ok" if available else "missing_key",
+                "fallback_used": not available,
+                "fallback_reason": None if available else "Gemini API key is not configured.",
+            }
+            return [], "gemini" if available else "deterministic_fallback"
+
+        class_map = {c.clause_id: c for c in (classifications or [])}
+
+        if not self.llm_service.is_available:
+            reason = "Gemini API key is not configured."
+            self.last_run_meta = {
+                "gemini_status": "missing_key",
+                "fallback_used": True,
+                "fallback_reason": reason,
+            }
+            return [
+                self._assess_deterministic(
+                    clause,
+                    class_map.get(clause.clause_id),
+                    "ai_unavailable",
+                    gemini_status="missing_key",
+                    fallback_reason=reason,
+                )
+                for clause in clause_list
+            ], "deterministic_fallback"
+
+        batches = [
+            clause_list[start : start + self.batch_size]
+            for start in range(0, len(clause_list), self.batch_size)
+        ]
+        sem = asyncio.Semaphore(3)
+
+        async def _run_batch(batch: list[ExtractedClause]):
+            async with sem:
+                try:
+                    f_list, part = await self._aassess_batch_with_gemini(batch, class_map)
+                    return f_list, part, True, False, "ok", None
+                except (LLMUnavailableError, LLMInvocationError) as exc:
+                    src = "ai_unavailable" if exc.status_label in {"missing_key", "dependency_missing"} else "deterministic_fallback"
+                    fallback_findings = [
+                        self._assess_deterministic(
+                            c,
+                            class_map.get(c.clause_id),
+                            src,
+                            gemini_status=exc.status_label,
+                            fallback_reason=exc.reason,
+                        )
+                        for c in batch
+                    ]
+                    return fallback_findings, True, False, True, exc.status_label, exc.reason
+                except Exception as exc:
+                    status_label, reason = classify_llm_exception(exc)
+                    fallback_findings = [
+                        self._assess_deterministic(
+                            c,
+                            class_map.get(c.clause_id),
+                            "deterministic_fallback",
+                            gemini_status=status_label,
+                            fallback_reason=reason,
+                        )
+                        for c in batch
+                    ]
+                    return fallback_findings, True, False, True, status_label, reason
+
+        batch_outputs = await asyncio.gather(*(_run_batch(b) for b in batches))
+
+        findings: list[RiskFinding] = []
+        used_gemini = False
+        used_fallback = False
+        reasons: list[str] = []
+        last_status = "ok"
+
+        for b_findings, b_partial, b_used_gemini, b_used_fallback, b_status, b_reason in batch_outputs:
+            findings.extend(b_findings)
+            if b_used_gemini:
+                used_gemini = True
+            if b_used_fallback or b_partial:
+                used_fallback = True
+            if b_status != "ok":
+                last_status = b_status
+            if b_reason:
+                reasons.append(b_reason)
+            elif b_partial:
+                reasons.append("Gemini omitted one or more clause IDs from structured risk output.")
+
+        mode = "gemini" if (used_gemini and not used_fallback) else (
+            "hybrid_fallback" if used_gemini else "deterministic_fallback"
+        )
+        self.last_run_meta = {
+            "gemini_status": last_status if used_fallback else "ok",
+            "fallback_used": used_fallback,
+            "fallback_reason": "; ".join(dict.fromkeys(reasons)) if reasons else None,
+        }
+        return findings, mode
+
+    async def _aassess_batch_with_gemini(
+        self,
+        batch: list[ExtractedClause],
+        class_map: dict[str, ClauseClassification],
+    ) -> tuple[list[RiskFinding], bool]:
+        blocks = []
+        for clause in batch:
+            cls = class_map.get(clause.clause_id)
+            cat = cls.category if cls else clause.category
+            fenced = wrap_untrusted_contract_text(clause.original_text)
+            loc = (
+                f"Page: {clause.page_number}"
+                if clause.page_number is not None
+                else f"DOCX Paragraph: {clause.paragraph_index or 1}"
+            )
+            blocks.append(
+                f"Clause ID: {clause.clause_id}\n"
+                f"Title: {clause.title}\n"
+                f"Category: {cat}\n"
+                f"{loc}\n"
+                f"{fenced}"
+            )
+
+        user_prompt = (
+            "Assess the contractual risks for each clause below and return structured factor scores. "
+            "Use finding_type='no_notable_risk' when a clause contains routine provisions with no identifiable risk indicator.\n\n"
+            + "\n\n---\n\n".join(blocks)
+        )
+        parsed = await self.llm_service.ainvoke_structured(
+            system_prompt=RISK_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            schema=GeminiBatchRiskAssessment,
+        )
+
+        by_id = {f.clause_id: f for f in parsed.findings}
+        results: list[RiskFinding] = []
+        partial_fallback = False
+        for clause in batch:
+            item = by_id.get(clause.clause_id)
+            if item is None:
+                partial_fallback = True
+                results.append(
+                    self._assess_deterministic(
+                        clause,
+                        class_map.get(clause.clause_id),
+                        "deterministic_fallback",
+                        gemini_status="malformed_output",
+                        fallback_reason="Gemini omitted clause ID from risk batch output.",
+                    )
+                )
+                continue
+
+            if item.finding_type == "no_notable_risk":
+                score, level, breakdown = None, "no_notable_risk", {}
+            elif item.finding_type in ("uncertain_finding", "missing_information"):
+                score, level, breakdown = None, "uncertain", {}
+            else:
+                score, level, breakdown = calculate_clause_risk_score(item.factors)
+
+            results.append(
+                RiskFinding(
+                    clause_id=clause.clause_id,
+                    risk_level=level,
+                    risk_score=score,
+                    risk_title=item.risk_title.strip() or f"{clause.category} review",
+                    original_clause=clause.original_text,
+                    explanation=item.explanation.strip(),
+                    potential_impact=item.potential_impact.strip(),
+                    suggested_action=item.suggested_action.strip(),
+                    page_number=clause.page_number,
+                    location_type=clause.location_type,
+                    paragraph_index=clause.paragraph_index,
+                    section_title=clause.section_title,
+                    score_breakdown=breakdown,
+                    finding_type=item.finding_type,
+                    analysis_source="gemini",
+                    verified=True,
+                )
+            )
+        return results, partial_fallback
 
     def _assess_batch_with_gemini(
         self,

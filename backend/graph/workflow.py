@@ -1,5 +1,7 @@
 """LangGraph workflow orchestration for LegalEase contract intelligence."""
 
+import asyncio
+import concurrent.futures
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
@@ -149,14 +151,14 @@ def build_legalease_workflow():
     return graph.compile()
 
 
-def run_contract_analysis(
+async def arun_contract_analysis(
     document_id: str,
     filename: str,
     file_path: str,
     file_type: str,
     runtime_config: dict[str, Any] | None = None,
 ) -> LegalEaseState:
-    """Execute the full LegalEase LangGraph analysis pipeline for one document."""
+    """Asynchronously execute the full LegalEase LangGraph analysis pipeline for one document."""
     workflow = build_legalease_workflow()
     initial_state: LegalEaseState = {
         "document_id": document_id,
@@ -169,5 +171,43 @@ def run_contract_analysis(
         "pdf_generated": False,
         "runtime_config": runtime_config or {},
     }
-    return workflow.invoke(initial_state)
+    return await workflow.ainvoke(initial_state)
+
+
+def run_contract_analysis(
+    document_id: str,
+    filename: str,
+    file_path: str,
+    file_type: str,
+    runtime_config: dict[str, Any] | None = None,
+) -> LegalEaseState:
+    """Execute the full LegalEase LangGraph analysis pipeline for one document, bridging sync/async."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                asyncio.run,
+                arun_contract_analysis(
+                    document_id=document_id,
+                    filename=filename,
+                    file_path=file_path,
+                    file_type=file_type,
+                    runtime_config=runtime_config,
+                ),
+            )
+            return future.result()
+    else:
+        return asyncio.run(
+            arun_contract_analysis(
+                document_id=document_id,
+                filename=filename,
+                file_path=file_path,
+                file_type=file_type,
+                runtime_config=runtime_config,
+            )
+        )
 

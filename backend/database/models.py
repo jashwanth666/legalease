@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -25,6 +26,7 @@ class Document(Base):
     __tablename__ = "documents"
 
     id = Column(Integer, primary_key=True, index=True)
+    tenant_id = Column(String(64), nullable=False, default="default_tenant", index=True)
     document_id = Column(String(32), unique=True, nullable=False, index=True)
     filename = Column(String(255), nullable=False)
     stored_filename = Column(String(255), nullable=False)
@@ -58,6 +60,10 @@ class Document(Base):
     )
     reports = relationship(
         "AnalysisReport", back_populates="document", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("ix_documents_tenant_document", "tenant_id", "document_id"),
     )
 
 

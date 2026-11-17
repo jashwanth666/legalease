@@ -66,6 +66,7 @@ async def _read_upload_in_chunks(
 )
 async def upload_contract(
     file: UploadFile = File(...),
+    tenant_id: str = "default_tenant",
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
@@ -91,7 +92,12 @@ async def upload_contract(
 
     document_id = _generate_document_id()
     stored_filename = f"{document_id}{validated.extension}"
-    stored_path = resolve_contained_path(settings.upload_dir, settings.upload_dir / stored_filename)
+    if tenant_id and tenant_id != "default_tenant":
+        tenant_upload_dir = settings.upload_dir / tenant_id
+        tenant_upload_dir.mkdir(parents=True, exist_ok=True)
+        stored_path = resolve_contained_path(settings.upload_dir, tenant_upload_dir / stored_filename, tenant_id=tenant_id)
+    else:
+        stored_path = resolve_contained_path(settings.upload_dir, settings.upload_dir / stored_filename)
 
     try:
         settings.ensure_directories()
@@ -121,6 +127,7 @@ async def upload_contract(
     page_count = int(extracted.get("page_count", validated.page_count))
 
     db_doc = Document(
+        tenant_id=tenant_id,
         document_id=document_id,
         filename=validated.safe_filename,
         stored_filename=stored_filename,
@@ -204,7 +211,13 @@ def delete_document(
             detail=f"Document '{document_id}' not found.",
         )
 
-    safe_delete_file(settings.upload_dir, settings.upload_dir / doc.stored_filename)
+    tenant_id = doc.tenant_id or "default_tenant"
+    tenant_upload_dir = settings.upload_dir / tenant_id
+    if (tenant_upload_dir / doc.stored_filename).exists():
+        safe_delete_file(settings.upload_dir, tenant_upload_dir / doc.stored_filename, tenant_id=tenant_id)
+    else:
+        safe_delete_file(settings.upload_dir, settings.upload_dir / doc.stored_filename)
+
     safe_delete_file(settings.extracted_dir, settings.extracted_dir / f"{document_id}.json")
 
     for report in list(doc.reports):

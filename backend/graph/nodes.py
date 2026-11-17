@@ -179,7 +179,7 @@ def split_into_clauses_node(state: dict[str, Any]) -> dict[str, Any]:
         return {"processing_errors": [f"Clause segmentation failed ({type(exc).__name__}): {exc}"]}
 
 
-def classify_clauses_node(state: dict[str, Any]) -> dict[str, Any]:
+async def classify_clauses_node(state: dict[str, Any]) -> dict[str, Any]:
     """Classify each extracted clause using Gemini or explicit deterministic fallback."""
     try:
         cfg = _resolve_runtime_paths(state)
@@ -187,7 +187,7 @@ def classify_clauses_node(state: dict[str, Any]) -> dict[str, Any]:
         llm = LLMService(api_key=cfg["api_key"], model_name=cfg["model_name"])
         agent = ClassificationAgent(llm_service=llm)
 
-        classifications, mode = agent.classify_clauses(clauses)
+        classifications, mode = await agent.aclassify_clauses(clauses)
         telemetry = {**agent.last_run_meta, "stage": "classification", "mode": mode}
         return {
             "classified_clauses": [c.model_dump() for c in classifications],
@@ -199,7 +199,7 @@ def classify_clauses_node(state: dict[str, Any]) -> dict[str, Any]:
         return {"processing_errors": [f"Clause classification failed ({type(exc).__name__}): {exc}"]}
 
 
-def risk_assessment_node(state: dict[str, Any]) -> dict[str, Any]:
+async def risk_assessment_node(state: dict[str, Any]) -> dict[str, Any]:
     """Assess clause risks using Gemini/fallback reasoning and Python risk scoring."""
     try:
         cfg = _resolve_runtime_paths(state)
@@ -210,7 +210,7 @@ def risk_assessment_node(state: dict[str, Any]) -> dict[str, Any]:
         llm = LLMService(api_key=cfg["api_key"], model_name=cfg["model_name"])
         agent = RiskAgent(llm_service=llm)
 
-        findings, mode = agent.assess_clauses(clauses, classified)
+        findings, mode = await agent.aassess_clauses(clauses, classified)
         telemetry = {**agent.last_run_meta, "stage": "risk_assessment", "mode": mode}
         return {
             "risk_results": [f.model_dump() for f in findings],
@@ -221,7 +221,7 @@ def risk_assessment_node(state: dict[str, Any]) -> dict[str, Any]:
         return {"processing_errors": [f"Risk assessment failed ({type(exc).__name__}): {exc}"]}
 
 
-def rag_template_comparison_node(state: dict[str, Any]) -> dict[str, Any]:
+async def rag_template_comparison_node(state: dict[str, Any]) -> dict[str, Any]:
     """Retrieve relevant illustrative reference clauses via FAISS and compare clauses."""
     try:
         cfg = _resolve_runtime_paths(state)
@@ -238,7 +238,7 @@ def rag_template_comparison_node(state: dict[str, Any]) -> dict[str, Any]:
         )
         agent = ComparisonAgent(retriever=retriever, llm_service=llm)
 
-        comparisons, retrieved_map, mode = agent.compare_clauses(
+        comparisons, retrieved_map, mode = await agent.acompare_clauses(
             clauses=clauses,
             classifications=classified,
             contract_type=state.get("contract_type"),
@@ -334,7 +334,7 @@ def verify_evidence_node(state: dict[str, Any]) -> dict[str, Any]:
         return {"processing_errors": [f"Evidence verification failed ({type(exc).__name__}): {exc}"]}
 
 
-def generate_summary_node(state: dict[str, Any]) -> dict[str, Any]:
+async def generate_summary_node(state: dict[str, Any]) -> dict[str, Any]:
     """Generate a plain-English executive summary from verified findings."""
     try:
         cfg = _resolve_runtime_paths(state)
@@ -343,7 +343,7 @@ def generate_summary_node(state: dict[str, Any]) -> dict[str, Any]:
 
         llm = LLMService(api_key=cfg["api_key"], model_name=cfg["model_name"])
         agent = SummaryAgent(llm_service=llm)
-        summary_text, summary_mode = agent.generate_summary(
+        summary_text, summary_mode = await agent.agenerate_summary(
             filename=state.get("filename", ""),
             contract_type=state.get("contract_type", "General Commercial Agreement"),
             overview=overview,

@@ -70,8 +70,12 @@ class LegalEaseAPIClient:
     def get_document(self, document_id: str) -> dict[str, Any]:
         return self._request("GET", f"/api/documents/{document_id}").json()
 
-    def analyze_document(self, document_id: str) -> dict[str, Any]:
-        return self._request("POST", f"/api/analyze/{document_id}").json()
+    def analyze_document(self, document_id: str, wait: bool = False) -> dict[str, Any]:
+        params = {"wait": "true"} if wait else {}
+        return self._request("POST", f"/api/analyze/{document_id}", params=params).json()
+
+    def get_status(self, document_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/api/status/{document_id}").json()
 
     def get_analysis(self, document_id: str) -> dict[str, Any]:
         return self._request("GET", f"/api/analysis/{document_id}").json()

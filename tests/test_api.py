@@ -121,10 +121,18 @@ def test_full_end_to_end_langgraph_and_pdf_report_pipeline(api_client):
     pre_analysis = client.get(f"/api/analysis/{doc_id}")
     assert pre_analysis.status_code == 409
 
-    # 2. Trigger LangGraph analysis
+    # 2. Trigger LangGraph analysis (asynchronous background task returning 202 Accepted)
     analyze_resp = client.post(f"/api/analyze/{doc_id}")
-    assert analyze_resp.status_code == 200
-    analysis = analyze_resp.json()
+    assert analyze_resp.status_code == 202
+    assert analyze_resp.json()["processing_status"] == "queued"
+
+    # Status endpoint reports real-time progress
+    status_resp = client.get(f"/api/status/{doc_id}")
+    assert status_resp.status_code == 200
+    assert status_resp.json()["processing_status"] == "analyzed"
+    assert status_resp.json()["progress_percent"] == 100
+
+    analysis = client.get(f"/api/analysis/{doc_id}").json()
     assert analysis["document_id"] == doc_id
     assert analysis["processing_status"] == "analyzed"
     assert analysis["detected_contract_type"] == "Service Agreement"
@@ -205,7 +213,7 @@ def test_analysis_failure_resets_processing_status_and_allows_retry(api_client, 
 
     monkeypatch.setattr("backend.api.analysis.run_contract_analysis", _boom)
     fail_resp = client.post(f"/api/analyze/{doc_id}")
-    assert fail_resp.status_code == 500
+    assert fail_resp.status_code == 202
 
     # Must NEVER remain stuck in 'processing'
     doc_state = client.get(f"/api/documents/{doc_id}").json()["document"]
@@ -220,8 +228,8 @@ def test_analysis_failure_resets_processing_status_and_allows_retry(api_client, 
 
     monkeypatch.setattr("backend.api.analysis.run_contract_analysis", real_run)
     retry_resp = client.post(f"/api/analyze/{doc_id}")
-    assert retry_resp.status_code == 200
-    assert retry_resp.json()["processing_status"] == "analyzed"
+    assert retry_resp.status_code == 202
+    assert client.get(f"/api/status/{doc_id}").json()["processing_status"] == "analyzed"
     assert client.get(f"/api/report/{doc_id}").status_code == 200
 
 
@@ -259,7 +267,7 @@ def test_pdf_generation_skipped_on_db_save_failure_and_partially_analyzed_on_pdf
     monkeypatch.setattr("backend.graph.workflow.generate_pdf_node", _spy_pdf)
 
     resp1 = client.post(f"/api/analyze/{doc_id}")
-    assert resp1.status_code == 422
+    assert resp1.status_code == 202
     assert pdf_called == []
     assert not (test_settings.reports_dir / f"LegalEase_Report_{doc_id}.pdf").exists()
     assert client.get(f"/api/documents/{doc_id}").json()["document"]["processing_status"] == "failed"
@@ -272,7 +280,7 @@ def test_pdf_generation_skipped_on_db_save_failure_and_partially_analyzed_on_pdf
 
     monkeypatch.setattr("backend.graph.workflow.generate_pdf_node", _fail_pdf)
     resp2 = client.post(f"/api/analyze/{doc_id}")
-    assert resp2.status_code == 422
+    assert resp2.status_code == 202
     assert client.get(f"/api/documents/{doc_id}").json()["document"]["processing_status"] == "partially_analyzed"
     assert client.get(f"/api/report/{doc_id}").status_code == 409
 
@@ -306,8 +314,8 @@ def test_docx_end_to_end_with_unicode_and_paragraph_locations(api_client):
     assert upload.json()["page_count"] == 0
 
     analyze = client.post(f"/api/analyze/{doc_id}")
-    assert analyze.status_code == 200
-    payload = analyze.json()
+    assert analyze.status_code == 202
+    payload = client.get(f"/api/analysis/{doc_id}").json()
     assert payload["processing_status"] == "analyzed"
     assert payload["gemini_status"] == "missing_key"
     assert payload["fallback_used"] is True

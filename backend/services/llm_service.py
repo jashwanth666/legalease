@@ -140,6 +140,9 @@ class LLMService:
             self.last_error_reason = reason
             raise LLMInvocationError(status_label, reason) from exc
 
+
+
+
     @retry(
         reraise=True,
         stop=stop_after_attempt(3),
@@ -184,3 +187,94 @@ class LLMService:
             self.last_status = status_label
             self.last_error_reason = reason
             raise LLMInvocationError(status_label, reason) from exc
+
+    @retry(
+        reraise=True,
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+        retry=retry_if_exception(_is_transient_error),
+    )
+    async def ainvoke_structured(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        schema: type[T],
+        temperature: float = 0.1,
+    ) -> T:
+        """Asynchronously invoke Gemini with strict Pydantic structured output validation."""
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        llm = self._build_chat_model(temperature=temperature)
+        structured_llm = llm.with_structured_output(schema)
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt),
+        ]
+        try:
+            result = await structured_llm.ainvoke(messages)
+            if result is None:
+                raise LLMInvocationError(
+                    "malformed_output",
+                    "Gemini returned an empty structured response.",
+                )
+            validated = result if isinstance(result, schema) else schema.model_validate(result)
+            self.last_status = "ok"
+            self.last_error_reason = None
+            return validated
+        except (LLMUnavailableError, LLMInvocationError) as exc:
+            self.last_status = exc.status_label
+            self.last_error_reason = exc.reason
+            raise
+        except Exception as exc:
+            status_label, reason = classify_llm_exception(exc)
+            self.last_status = status_label
+            self.last_error_reason = reason
+            raise LLMInvocationError(status_label, reason) from exc
+
+    @retry(
+        reraise=True,
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+        retry=retry_if_exception(_is_transient_error),
+    )
+    async def ainvoke_text(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float = 0.2,
+    ) -> str:
+        """Asynchronously invoke Gemini for plain-text generation."""
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        llm = self._build_chat_model(temperature=temperature)
+        try:
+            response = await llm.ainvoke(
+                [
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=user_prompt),
+                ]
+            )
+            content = getattr(response, "content", response)
+            if isinstance(content, list):
+                parts = [
+                    part.get("text", str(part)) if isinstance(part, dict) else str(part)
+                    for part in content
+                ]
+                text_out = "\n".join(parts).strip()
+            else:
+                text_out = str(content).strip()
+            self.last_status = "ok"
+            self.last_error_reason = None
+            return text_out
+        except (LLMUnavailableError, LLMInvocationError) as exc:
+            self.last_status = exc.status_label
+            self.last_error_reason = exc.reason
+            raise
+        except Exception as exc:
+            status_label, reason = classify_llm_exception(exc)
+            self.last_status = status_label
+            self.last_error_reason = reason
+            raise LLMInvocationError(status_label, reason) from exc
+
+
+

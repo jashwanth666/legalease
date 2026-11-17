@@ -76,8 +76,8 @@ def test_nda_extraction_accuracy(eval_client):
     doc_id = up.json()["document_id"]
 
     an = client.post(f"/api/analyze/{doc_id}")
-    assert an.status_code == 200
-    payload = an.json()
+    assert an.status_code in (200, 202)
+    payload = client.get(f"/api/analysis/{doc_id}").json()
 
     clauses_resp = client.get(f"/api/clauses/{doc_id}")
     assert clauses_resp.status_code == 200
@@ -110,8 +110,8 @@ def test_nda_risk_findings_have_evidence(eval_client):
         up = client.post("/api/upload", files={"file": ("sample_nda.pdf", f, "application/pdf")})
     doc_id = up.json()["document_id"]
     an = client.post(f"/api/analyze/{doc_id}")
-    assert an.status_code == 200
-    findings = an.json().get("risk_findings", [])
+    assert an.status_code in (200, 202)
+    findings = client.get(f"/api/analysis/{doc_id}").json().get("risk_findings", [])
 
     high_or_crit = [f for f in findings if f.get("risk_level") in {"high", "critical"}]
     for finding in high_or_crit:
@@ -139,8 +139,8 @@ def test_service_agreement_known_risks_detected(eval_client):
     doc_id = up.json()["document_id"]
 
     an = client.post(f"/api/analyze/{doc_id}")
-    assert an.status_code == 200
-    payload = an.json()
+    assert an.status_code in (200, 202)
+    payload = client.get(f"/api/analysis/{doc_id}").json()
 
     findings = payload.get("risk_findings", [])
     assert len(findings) > 0
@@ -177,8 +177,8 @@ def test_false_positive_rate(eval_client):
         up = client.post("/api/upload", files={"file": ("sample_nda.pdf", f, "application/pdf")})
     doc_id = up.json()["document_id"]
     an = client.post(f"/api/analyze/{doc_id}")
-    assert an.status_code == 200
-    findings = an.json().get("risk_findings", [])
+    assert an.status_code in (200, 202)
+    findings = client.get(f"/api/analysis/{doc_id}").json().get("risk_findings", [])
 
     critical_findings = [f for f in findings if f.get("risk_level") == "critical"]
     print(f"\n[EVAL] NDA Critical Findings Count: {len(critical_findings)} (Allowed max: 2)")
@@ -195,8 +195,8 @@ def test_deterministic_vs_gemini_label_accuracy(eval_client):
         up = client.post("/api/upload", files={"file": ("sample_nda.pdf", f, "application/pdf")})
     doc_id = up.json()["document_id"]
     an = client.post(f"/api/analyze/{doc_id}")
-    assert an.status_code == 200
-    payload = an.json()
+    assert an.status_code in (200, 202)
+    payload = client.get(f"/api/analysis/{doc_id}").json()
 
     assert payload.get("analysis_mode") == "deterministic_fallback"
     assert payload.get("fallback_used") is True
@@ -212,8 +212,8 @@ def test_evidence_verification_accuracy(eval_client):
         up = client.post("/api/upload", files={"file": ("sample_nda.pdf", f, "application/pdf")})
     doc_id = up.json()["document_id"]
     an = client.post(f"/api/analyze/{doc_id}")
-    assert an.status_code == 200
-    findings = an.json().get("risk_findings", [])
+    assert an.status_code in (200, 202)
+    findings = client.get(f"/api/analysis/{doc_id}").json().get("risk_findings", [])
 
     scored_findings = [f for f in findings if f.get("risk_level") != "no_notable_risk"]
     if scored_findings:
@@ -232,8 +232,8 @@ def test_missing_clause_detection_accuracy(eval_client):
         up = client.post("/api/upload", files={"file": ("sample_nda.pdf", f, "application/pdf")})
     doc_id = up.json()["document_id"]
     an = client.post(f"/api/analyze/{doc_id}")
-    assert an.status_code == 200
-    missing = an.json().get("missing_clauses", {})
+    assert an.status_code in (200, 202)
+    missing = client.get(f"/api/analysis/{doc_id}").json().get("missing_clauses", {})
 
     assert len(missing.get("checklist_categories", [])) >= 3
     assert len(missing.get("detected_categories", [])) >= 1
