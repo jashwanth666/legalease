@@ -117,27 +117,24 @@ class TestRedisRateLimiter:
         with pytest.raises(RateLimitExceeded):
             limiter.check("login", "1.2.3.4")
 
-    def test_pipeline_fallback_allows_and_blocks(self):
-        """When register_script fails, fallback pipeline uses ZREMRANGEBYSCORE + ZCARD."""
+    def test_direct_eval_fallback_is_atomic(self):
+        """When register_script fails, fallback uses atomic redis.eval with full 128-bit UUID."""
         redis_mock = MagicMock()
-        redis_mock.register_script.side_effect = Exception("No Lua")
-
-        # Mock first pipeline: zremrangebyscore + zcard
-        pipe1 = MagicMock()
-        pipe1.execute.return_value = [0, 2]  # count=2 <= limit of 3
-        pipe2 = MagicMock()
-        pipe2.execute.return_value = [1, 1]
-
-        redis_mock.pipeline.side_effect = [pipe1, pipe2]
+        redis_mock.register_script.side_effect = Exception("No script cache")
+        redis_mock.eval.return_value = 1  # Allowed
 
         limiter = RedisRateLimiter(redis_client=redis_mock, max_attempts=3, window_seconds=60.0)
         assert limiter._script is None
-        limiter.check("register", "9.9.9.9")  # should pass
+        limiter.check("register", "9.9.9.9")
+        redis_mock.eval.assert_called_once()
+        # Verify member parameter contains full 32-hex character UUID
+        args = redis_mock.eval.call_args[0]
+        member = args[6]  # _SLIDING_WINDOW_LUA, 1, key, now, window, limit, member
+        _, uuid_part = member.split(":", 1)
+        assert len(uuid_part) == 32
 
-        # Now test when count exceeds limit:
-        pipe_blocked = MagicMock()
-        pipe_blocked.execute.return_value = [0, 3]  # count=3 >= limit
-        redis_mock.pipeline.side_effect = [pipe_blocked]
+        # When eval returns 0 (limit reached)
+        redis_mock.eval.return_value = 0
         with pytest.raises(RateLimitExceeded):
             limiter.check("register", "9.9.9.9")
 
@@ -190,15 +187,26 @@ class TestGetRateLimiterFactory:
         ):
             get_rate_limiter(settings)
 
-    def test_prod_raises_value_error_when_require_redis_and_url_empty(self):
-        """In production with require_redis_in_production=True, empty REDIS_URL must raise ValueError."""
+    def test_prod_raises_value_error_by_default_when_redis_url_empty(self):
+        """In production by default, empty REDIS_URL must raise ValueError."""
         settings = MagicMock()
         settings.environment = "production"
         settings.redis_url = ""
-        settings.require_redis_in_production = True
+        settings.allow_inmemory_rate_limiter_in_production = False
 
-        with pytest.raises(ValueError, match="require_redis_in_production is enabled, but REDIS_URL is not set"):
+        with pytest.raises(ValueError, match="Running in production requires REDIS_URL"):
             get_rate_limiter(settings)
+
+    def test_prod_allows_inmemory_when_explicitly_opted_in(self):
+        """In production, allow_inmemory_rate_limiter_in_production=True permits in-memory limiter."""
+        settings = MagicMock()
+        settings.environment = "production"
+        settings.redis_url = ""
+        settings.allow_inmemory_rate_limiter_in_production = True
+
+        limiter = get_rate_limiter(settings)
+        assert isinstance(limiter, InMemoryRateLimiter)
+        assert limiter.backend_type == "inmemory"
 
     def test_returns_redis_limiter_when_reachable(self):
         settings = MagicMock()

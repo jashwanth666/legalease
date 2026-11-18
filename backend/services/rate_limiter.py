@@ -207,26 +207,14 @@ class RedisRateLimiter(RateLimiter):
         window = window_seconds if window_seconds is not None else self.default_window_seconds
         key = self._key(action, client_ip)
         now = time.time()
-        member = f"{now}:{uuid.uuid4().hex[:8]}"
+        member = f"{now}:{uuid.uuid4().hex}"
 
         if self._script is not None:
-            # Atomic Lua evaluation
+            # Atomic Lua evaluation via registered SHA
             allowed = self._script(keys=[key], args=[now, window, limit, member])
         else:
-            # Fallback Redis pipeline with ZREMRANGEBYSCORE + ZCARD + ZADD
-            pipe = self._redis.pipeline()
-            pipe.zremrangebyscore(key, "-inf", now - window)
-            pipe.zcard(key)
-            results = pipe.execute()
-            current_count = results[1]
-            if current_count >= limit:
-                allowed = 0
-            else:
-                pipe2 = self._redis.pipeline()
-                pipe2.zadd(key, {member: now})
-                pipe2.expire(key, int(window) + 1)
-                pipe2.execute()
-                allowed = 1
+            # Atomic evaluation via direct Redis EVAL (guarantees atomic execution)
+            allowed = self._redis.eval(_SLIDING_WINDOW_LUA, 1, key, now, window, limit, member)
 
         if allowed == 0:
             raise RateLimitExceeded(
@@ -280,9 +268,11 @@ def get_rate_limiter(
     is_production = settings.environment.lower() == "production"
     redis_url = (settings.redis_url or "").strip()
 
-    if is_production and settings.require_redis_in_production and not redis_url:
+    if is_production and not settings.allow_inmemory_rate_limiter_in_production and not redis_url:
         raise ValueError(
-            "CRITICAL SECURITY CONFIGURATION ERROR: require_redis_in_production is enabled, but REDIS_URL is not set."
+            "CRITICAL SECURITY CONFIGURATION ERROR: Running in production requires REDIS_URL for distributed "
+            "rate limiting across instances. Set REDIS_URL or explicitly set "
+            "ALLOW_INMEMORY_RATE_LIMITER_IN_PRODUCTION=true for documented single-instance deployments."
         )
 
     if redis_url:

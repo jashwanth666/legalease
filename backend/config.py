@@ -46,7 +46,8 @@ class Settings(BaseSettings):
     jwt_access_token_expire_minutes: int = 1440
     admin_bootstrap_secret: str = ""
     redis_url: str = ""
-    require_redis_in_production: bool = False
+    require_redis_in_production: bool = True
+    allow_inmemory_rate_limiter_in_production: bool = False
     allowed_origins: str = "http://localhost:8501,http://127.0.0.1:8501"
 
     def validate_production_security(self) -> None:
@@ -78,11 +79,14 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "CRITICAL SECURITY CONFIGURATION ERROR: Wildcard origin '*' is forbidden in production when credentials are enabled."
                 )
-            # Distributed rate limiting in production
-            if self.require_redis_in_production and not self.redis_url:
-                raise ValueError(
-                    "CRITICAL SECURITY CONFIGURATION ERROR: require_redis_in_production is enabled, but REDIS_URL is not configured."
-                )
+            # Distributed rate limiting in production: Redis is required by default
+            if not self.allow_inmemory_rate_limiter_in_production and (self.require_redis_in_production or not self.redis_url):
+                if not self.redis_url or not self.redis_url.strip():
+                    raise ValueError(
+                        "CRITICAL SECURITY CONFIGURATION ERROR: Running in production requires REDIS_URL for distributed "
+                        "rate limiting across instances. Configure REDIS_URL or explicitly set "
+                        "ALLOW_INMEMORY_RATE_LIMITER_IN_PRODUCTION=true for documented single-instance deployments."
+                    )
             if self.redis_url:
                 try:
                     import redis as redis_lib

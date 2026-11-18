@@ -100,10 +100,14 @@ python run.py
 - **Public Registration (`POST /api/auth/register`):** Creates strictly `employee` accounts in dedicated, server-assigned isolated workspaces. Client-supplied `tenant_id` parameters are intentionally not accepted or trusted; the server auto-assigns a unique tenant identifier to prevent tenant enumeration or unauthorized joining of existing organizations.
 - **Admin Provisioning (`POST /api/auth/users`):** Authenticated administrators can provision team members (`employee`, `legal_reviewer`, `admin`) directly within their own organization.
 
-### Distributed Rate Limiting
-Authentication endpoints (`/api/auth/login`, `/api/auth/register`, `/api/auth/bootstrap-admin`) are protected by a sliding-window rate limiter:
-- **Development Fallback:** When `REDIS_URL` is omitted, an in-memory thread-safe sliding-window counter is used automatically.
-- **Production / Multi-Instance:** Configure `REDIS_URL=redis://localhost:6379/0` in `.env` to enable centralized Redis `INCR` + `EXPIRE` rate limiting across multiple backend instances.
+### Distributed Rate Limiting & CSRF Protection
+- **Sliding-Window Rate Limiting:** Sensitive endpoints (`/api/auth/login`, `/api/auth/register`, `/api/auth/bootstrap-admin`) use an atomic Redis Sorted-Set (ZSET) Lua sliding-window algorithm with 128-bit member identifiers.
+  - **Production:** `REDIS_URL` is mandatory by default to ensure uniform rate limiting across multiple backend instances. To opt out for single-instance setups, set `ALLOW_INMEMORY_RATE_LIMITER_IN_PRODUCTION=true`.
+  - **Development:** Thread-safe in-memory sliding window fallback is used automatically when `REDIS_URL` is omitted.
+- **CSRF Protection:** State-changing requests using cookie authentication require signed double-submit CSRF tokens and validated `Origin`/`Referer` headers. Direct API clients using `Authorization: Bearer <token>` bypass browser CSRF checks automatically.
+
+### Automated CI / CD
+The repository includes a GitHub Actions workflow (`.github/workflows/ci.yml`) providing automated test runs with a live Redis Alpine service container on every push and pull request.
 
 ---
 
@@ -112,9 +116,10 @@ Authentication endpoints (`/api/auth/login`, `/api/auth/register`, `/api/auth/bo
 ### Authentication & User Management
 - `GET /api/auth/bootstrap-status` — Public check whether system administrator setup is completed
 - `POST /api/auth/bootstrap-admin` — One-time administrator provisioning via `ADMIN_BOOTSTRAP_SECRET`
-- `POST /api/auth/register` — Public self-registration (strictly creates `employee` accounts)
-- `POST /api/auth/login` — Authenticate and receive RFC 7519 HS256 JWT access token and HttpOnly cookie
-- `POST /api/auth/logout` — Clear session cookies securely
+- `POST /api/auth/register` — Public self-registration (strictly creates `employee` accounts in private tenant)
+- `POST /api/auth/login` — Authenticate and receive RFC 7519 HS256 JWT access token, HttpOnly cookie, and signed CSRF token
+- `GET /api/auth/csrf-token` — Retrieve a fresh signed CSRF token for cookie-authenticated browser sessions
+- `POST /api/auth/logout` — Clear session cookies securely (authenticated with CSRF protection)
 - `GET /api/auth/me` — Authenticated user profile and organization context
 - `POST /api/auth/users` — Admin provisions new team member in their tenant
 - `GET /api/auth/users` — Admin and Legal Reviewer list organization team members

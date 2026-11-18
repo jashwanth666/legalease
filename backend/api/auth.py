@@ -1,6 +1,7 @@
 """Authentication and user management REST API endpoints with brute-force rate limiting."""
 
 from datetime import datetime, timedelta, timezone
+import hashlib
 import hmac
 import logging
 import secrets
@@ -70,10 +71,17 @@ def _check_rate_limit(
         ) from exc
 
 
+def generate_signed_csrf_token(secret_key: str) -> str:
+    """Generate a cryptographically signed CSRF token resistant to forgery and tampering."""
+    raw = secrets.token_hex(16)
+    sig = hmac.new(secret_key.encode("utf-8"), raw.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
+    return f"{raw}.{sig}"
+
+
 @router.get("/csrf-token")
 def issue_csrf_token(response: Response, settings: Settings = Depends(get_settings)):
-    """Issue a fresh CSRF token for cookie-authenticated web sessions."""
-    csrf_token = secrets.token_hex(32)
+    """Issue a fresh signed CSRF token for cookie-authenticated web sessions."""
+    csrf_token = generate_signed_csrf_token(settings.jwt_secret_key)
     is_secure = settings.cookie_secure or settings.environment.lower() == "production"
     response.set_cookie(
         key="csrf_token",
@@ -281,8 +289,8 @@ def login_user(
         samesite="lax",
     )
 
-    # Set CSRF protection token cookie (readable by frontend to pass in X-CSRF-Token header)
-    csrf_token = secrets.token_hex(32)
+    # Set signed CSRF protection token cookie (readable by frontend to pass in X-CSRF-Token header)
+    csrf_token = generate_signed_csrf_token(settings.jwt_secret_key)
     response.set_cookie(
         key="csrf_token",
         value=csrf_token,
@@ -301,8 +309,11 @@ def login_user(
 
 
 @router.post("/logout")
-def logout_user(response: Response):
-    """Clear session authentication and CSRF cookies securely."""
+def logout_user(
+    response: Response,
+    current_user: User = Depends(get_current_user),
+):
+    """Clear session authentication and CSRF cookies securely with authentication and CSRF check."""
     response.delete_cookie(
         key="access_token",
         httponly=True,
@@ -312,7 +323,7 @@ def logout_user(response: Response):
         key="csrf_token",
         samesite="lax",
     )
-    return {"status": "ok", "message": "Successfully logged out."}
+    return {"status": "ok", "message": f"Successfully logged out {current_user.email}."}
 
 
 @router.get("/me", response_model=UserResponse)

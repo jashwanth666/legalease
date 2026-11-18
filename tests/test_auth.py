@@ -269,7 +269,7 @@ def test_register_and_login_flow(auth_client):
     assert me_data["tenant_id"] == "tenant_legalcorp"
 
     # 12. Logout endpoint
-    logout_resp = client.post("/api/auth/logout")
+    logout_resp = client.post("/api/auth/logout", headers=admin_headers)
     assert logout_resp.status_code == 200
     assert logout_resp.json()["status"] == "ok"
 
@@ -285,6 +285,7 @@ def test_production_jwt_secret_validation():
         environment="production",
         jwt_secret_key="insecure-default-secret-key-change-in-production",
         admin_bootstrap_secret="atleast16chars!!!!",
+        allow_inmemory_rate_limiter_in_production=True,
     )
     with pytest.raises(ValueError, match="CRITICAL SECURITY CONFIGURATION ERROR"):
         prod_settings_bad.validate_production_security()
@@ -293,6 +294,7 @@ def test_production_jwt_secret_validation():
         environment="production",
         jwt_secret_key="a-very-long-and-secure-randomly-generated-secret-key-32bytes",
         admin_bootstrap_secret="atleast16chars!!!!",
+        allow_inmemory_rate_limiter_in_production=True,
     )
     # Good settings must not raise
     prod_settings_good.validate_production_security()
@@ -305,6 +307,7 @@ def test_production_bootstrap_secret_validation():
         environment="production",
         jwt_secret_key="a-very-long-and-secure-randomly-generated-secret-key-32bytes",
         admin_bootstrap_secret="",
+        allow_inmemory_rate_limiter_in_production=True,
     )
     with pytest.raises(ValueError, match="ADMIN_BOOTSTRAP_SECRET"):
         no_bootstrap.validate_production_security()
@@ -314,6 +317,7 @@ def test_production_bootstrap_secret_validation():
         environment="production",
         jwt_secret_key="a-very-long-and-secure-randomly-generated-secret-key-32bytes",
         admin_bootstrap_secret="tooshort",
+        allow_inmemory_rate_limiter_in_production=True,
     )
     with pytest.raises(ValueError, match="ADMIN_BOOTSTRAP_SECRET"):
         short_secret.validate_production_security()
@@ -323,9 +327,33 @@ def test_production_bootstrap_secret_validation():
         environment="production",
         jwt_secret_key="a-very-long-and-secure-randomly-generated-secret-key-32bytes",
         admin_bootstrap_secret="secret",
+        allow_inmemory_rate_limiter_in_production=True,
     )
     with pytest.raises(ValueError, match="ADMIN_BOOTSTRAP_SECRET"):
         trivial_secret.validate_production_security()
+
+
+def test_production_redis_mandatory_by_default():
+    """In production, REDIS_URL is mandatory by default unless explicitly opted in."""
+    prod_bad = Settings(
+        environment="production",
+        jwt_secret_key="a-very-long-and-secure-randomly-generated-secret-key-32bytes",
+        admin_bootstrap_secret="atleast16chars!!!!",
+        redis_url="",
+        allow_inmemory_rate_limiter_in_production=False,
+    )
+    with pytest.raises(ValueError, match="Running in production requires REDIS_URL"):
+        prod_bad.validate_production_security()
+
+    # Opted-in single-instance deployment
+    prod_opt_in = Settings(
+        environment="production",
+        jwt_secret_key="a-very-long-and-secure-randomly-generated-secret-key-32bytes",
+        admin_bootstrap_secret="atleast16chars!!!!",
+        redis_url="",
+        allow_inmemory_rate_limiter_in_production=True,
+    )
+    prod_opt_in.validate_production_security()
 
 
 def test_production_cors_wildcard_rejection():
@@ -335,6 +363,7 @@ def test_production_cors_wildcard_rejection():
         jwt_secret_key="a-very-long-and-secure-randomly-generated-secret-key-32bytes",
         admin_bootstrap_secret="atleast16chars!!!!",
         allowed_origins="http://localhost:8501,*",
+        allow_inmemory_rate_limiter_in_production=True,
     )
     with pytest.raises(ValueError, match=r"Wildcard origin '\*' is forbidden in production"):
         prod_wildcard.validate_production_security()
@@ -392,6 +421,7 @@ def test_cookie_auth_requires_csrf_for_state_changing_methods(auth_client):
             json={"email": "bootstrap_admin@legalcorp.com", "password": "SecurePassword123!"},
         )
     assert login_resp.status_code == 200
+    token = login_resp.json()["access_token"]
 
     # Ensure access_token cookie is present in client
     assert "access_token" in client.cookies
@@ -402,27 +432,92 @@ def test_cookie_auth_requires_csrf_for_state_changing_methods(auth_client):
     resp_no_csrf = client.post(
         "/api/auth/users",
         json={"email": "test_csrf@legalcorp.com", "password": "Password123!", "role": "employee"},
+        headers={"Origin": "http://localhost:8501"},
     )
     assert resp_no_csrf.status_code == 403
     assert "CSRF validation failed" in resp_no_csrf.json()["detail"]
 
-    # 3. State-changing POST with mismatched/invalid X-CSRF-Token header -> 403 Forbidden
+    # 3. State-changing POST with mismatched X-CSRF-Token header -> 403 Forbidden
     resp_bad_csrf = client.post(
         "/api/auth/users",
         json={"email": "test_csrf@legalcorp.com", "password": "Password123!", "role": "employee"},
-        headers={"X-CSRF-Token": "invalid-wrong-token-value"},
+        headers={"X-CSRF-Token": "invalid-wrong-token-value", "Origin": "http://localhost:8501"},
     )
     assert resp_bad_csrf.status_code == 403
     assert "token mismatch" in resp_bad_csrf.json()["detail"]
 
-    # 4. State-changing POST with matching X-CSRF-Token header -> 201 Created
-    resp_valid_csrf = client.post(
+    # 4. State-changing POST with invalid structure in CSRF cookie -> 403 Forbidden
+    client.cookies.clear()
+    client.cookies.set("access_token", token)
+    client.cookies.set("csrf_token", "invalidnostructure")
+    resp_bad_structure = client.post(
+        "/api/auth/users",
+        json={"email": "test_csrf@legalcorp.com", "password": "Password123!", "role": "employee"},
+        headers={"X-CSRF-Token": "invalidnostructure", "Origin": "http://localhost:8501"},
+    )
+    assert resp_bad_structure.status_code == 403
+    assert "invalid CSRF token structure" in resp_bad_structure.json()["detail"]
+
+    # 5. State-changing POST with tampered signature in CSRF token -> 403 Forbidden
+    tampered_sig = valid_csrf_token[:-4] + "0000"
+    client.cookies.clear()
+    client.cookies.set("access_token", token)
+    client.cookies.set("csrf_token", tampered_sig)
+    resp_tampered = client.post(
+        "/api/auth/users",
+        json={"email": "test_csrf@legalcorp.com", "password": "Password123!", "role": "employee"},
+        headers={"X-CSRF-Token": tampered_sig, "Origin": "http://localhost:8501"},
+    )
+    assert resp_tampered.status_code == 403
+    assert "forged or tampered" in resp_tampered.json()["detail"]
+
+    # Restore valid signed CSRF and access_token cookies
+    client.cookies.clear()
+    client.cookies.set("access_token", token)
+    client.cookies.set("csrf_token", valid_csrf_token)
+
+    # 6. State-changing POST with missing Origin and Referer -> 403 Forbidden
+    resp_no_origin = client.post(
         "/api/auth/users",
         json={"email": "test_csrf@legalcorp.com", "password": "Password123!", "role": "employee"},
         headers={"X-CSRF-Token": valid_csrf_token},
     )
+    assert resp_no_origin.status_code == 403
+    assert "missing Origin or Referer" in resp_no_origin.json()["detail"]
+
+    # 7. State-changing POST with untrusted Origin -> 403 Forbidden
+    resp_bad_origin = client.post(
+        "/api/auth/users",
+        json={"email": "test_csrf@legalcorp.com", "password": "Password123!", "role": "employee"},
+        headers={"X-CSRF-Token": valid_csrf_token, "Origin": "https://attacker.evil.com"},
+    )
+    assert resp_bad_origin.status_code == 403
+    assert "untrusted origin" in resp_bad_origin.json()["detail"]
+
+    # 8. State-changing POST with valid Referer (Origin absent) -> 201 Created
+    resp_valid_referer = client.post(
+        "/api/auth/users",
+        json={"email": "test_csrf_ref@legalcorp.com", "password": "Password123!", "role": "employee"},
+        headers={"X-CSRF-Token": valid_csrf_token, "Referer": "http://localhost:8501/dashboard"},
+    )
+    assert resp_valid_referer.status_code == 201
+    assert resp_valid_referer.json()["email"] == "test_csrf_ref@legalcorp.com"
+
+    # 9. State-changing POST with matching X-CSRF-Token header and trusted Origin -> 201 Created
+    resp_valid_csrf = client.post(
+        "/api/auth/users",
+        json={"email": "test_csrf@legalcorp.com", "password": "Password123!", "role": "employee"},
+        headers={"X-CSRF-Token": valid_csrf_token, "Origin": "http://localhost:8501"},
+    )
     assert resp_valid_csrf.status_code == 201
     assert resp_valid_csrf.json()["email"] == "test_csrf@legalcorp.com"
+
+    # 10. Authenticated logout with valid CSRF token succeeds
+    resp_logout = client.post(
+        "/api/auth/logout",
+        headers={"X-CSRF-Token": valid_csrf_token, "Origin": "http://localhost:8501"},
+    )
+    assert resp_logout.status_code == 200
 
 
 def test_bearer_auth_bypasses_csrf_protection(auth_client):
