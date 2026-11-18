@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api import (
     analysis_router,
+    auth_router,
     comparison_router,
     reports_router,
     upload_router,
@@ -59,6 +60,7 @@ def create_app() -> FastAPI:
             disclaimer=LEGAL_DISCLAIMER,
         )
 
+    app.include_router(auth_router)
     app.include_router(upload_router)
     app.include_router(analysis_router)
     app.include_router(comparison_router)

@@ -89,21 +89,75 @@ st.markdown(
 if doc.get("last_error"):
     st.error(f"Last analysis execution error: {doc['last_error']}")
 
-# Analysis Launch / Retry Actions
-if proc_status != "analyzed":
+# Analysis Launch / Retry Actions & Real-Time Background Progress
+if proc_status in ("queued", "processing"):
+    try:
+        status_info = client.get_status(selected_id)
+        current_stage = status_info.get("current_stage", "processing")
+        stage_label = status_info.get("stage_label", "Analyzing contract...")
+        progress_pct = status_info.get("progress_percent", 10)
+        completed_stages = status_info.get("completed_stages", [])
+        pending_stages = status_info.get("pending_stages", [])
+
+        st.markdown(
+            f"""
+            <div class="le-card" style="border-left: 4px solid #356AE6; background:#F8FAFC; padding:1.25rem; margin-bottom:1.25rem;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.6rem; flex-wrap:wrap; gap:0.5rem;">
+                    <div>
+                        <span style="font-size:0.75rem; font-weight:700; text-transform:uppercase; color:#356AE6; letter-spacing:0.06em;">
+                            ⚡ Background Analysis Running
+                        </span>
+                        <div style="font-size:1.15rem; font-weight:800; color:#101B35;">
+                            {html.escape(stage_label)}
+                        </div>
+                    </div>
+                    <div style="font-size:1.3rem; font-weight:800; color:#356AE6;">
+                        {progress_pct}%
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.progress(progress_pct / 100.0)
+
+        with st.expander(
+            f"View Execution Graph Stages ({len(completed_stages)} complete, {len(pending_stages)} remaining)",
+            expanded=True,
+        ):
+            col_comp, col_pend = st.columns(2)
+            with col_comp:
+                st.markdown("<strong style='font-size:0.82rem; color:#16A36A;'>✅ Completed Stages</strong>", unsafe_allow_html=True)
+                if completed_stages:
+                    for s in completed_stages:
+                        st.markdown(f"<span style='font-size:0.8rem; color:#172033;'>• {html.escape(s.replace('_', ' ').title())}</span>", unsafe_allow_html=True)
+                else:
+                    st.caption("Initializing pipeline...")
+            with col_pend:
+                st.markdown("<strong style='font-size:0.82rem; color:#748094;'>⏳ Pending Stages</strong>", unsafe_allow_html=True)
+                if pending_stages:
+                    for s in pending_stages:
+                        st.markdown(f"<span style='font-size:0.8rem; color:#748094;'>• {html.escape(s.replace('_', ' ').title())}</span>", unsafe_allow_html=True)
+                else:
+                    st.caption("All stages completed.")
+
+        import time
+        time.sleep(2)
+        st.rerun()
+    except APIError as exc:
+        st.error(exc.message)
+elif proc_status != "analyzed":
     if doc.get("ocr_required"):
         st.warning("⚠️ This PDF contains no selectable digital text. Optical Character Recognition (OCR) is required.")
     else:
         st.info("This agreement is ingested but has not yet completed full AI analysis. Click below to start the pipeline.")
         btn_txt = "Retry Analysis" if proc_status in {"failed", "partially_analyzed"} else "Launch Full AI Analysis"
         if st.button(btn_txt, type="primary"):
-            with st.spinner("Extracting clauses, running Gemini classification, risk scoring, and benchmark RAG..."):
-                try:
-                    client.analyze_document(selected_id)
-                    st.success("Analysis completed successfully!")
-                    st.rerun()
-                except APIError as exc:
-                    st.error(exc.message)
+            try:
+                client.analyze_document(selected_id, wait=False)
+                st.rerun()
+            except APIError as exc:
+                st.error(exc.message)
 
 # Direct Shortcut to Detailed Risk Assessment
 if proc_status == "analyzed":
@@ -129,6 +183,37 @@ with tab_summary:
                     f"⚠️ Screening conducted via `{mode}` (Gemini status: `{gemini_status}`). "
                     f"Reason: {analysis.get('fallback_reason') or 'API unavailable'}. "
                     "Deterministic findings are pattern-based and distinct from generative Gemini advice."
+                )
+
+            # Grounded Evidence Verification Summary Banner
+            v_sum = analysis.get("verification_summary") or {}
+            if v_sum:
+                tot_aud = v_sum.get("total_audited", 0)
+                ver_count = v_sum.get("verified_count", 0)
+                unver_count = v_sum.get("unverified_count", 0)
+                ver_rate = v_sum.get("verification_rate_percent", 0.0)
+
+                st.markdown(
+                    f"""
+                    <div style="background:#FFFFFF; border:1px solid #E6EAF0; border-radius:10px; padding:0.9rem 1.15rem; margin-bottom:1rem; box-shadow:0 1px 3px rgba(16,27,53,0.04);">
+                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.5rem;">
+                            <span style="font-size:0.78rem; font-weight:700; text-transform:uppercase; color:#101B35; letter-spacing:0.04em;">
+                                🛡️ Grounded Evidence Verification Summary
+                            </span>
+                            <span style="font-size:0.82rem; font-weight:700; color:{'#16A36A' if ver_rate >= 75 else '#D97706'};">
+                                {ver_rate:.1f}% Citations Grounded & Verified
+                            </span>
+                        </div>
+                        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); gap:0.5rem; font-size:0.78rem; color:#748094;">
+                            <div>Total Audited: <strong style="color:#101B35;">{tot_aud}</strong></div>
+                            <div>Grounded / Verified: <strong style="color:#16A36A;">{ver_count}</strong></div>
+                            <div>Review Required: <strong style="color:#DC4545;">{unver_count}</strong></div>
+                            <div>Metadata Verified: <strong style="color:#101B35;">{v_sum.get('metadata_verified', 0)}/{v_sum.get('metadata_verified', 0) + v_sum.get('metadata_unverified', 0)}</strong></div>
+                            <div>Risks Verified: <strong style="color:#101B35;">{v_sum.get('risks_verified', 0)}/{v_sum.get('risks_verified', 0) + v_sum.get('risks_unverified', 0)}</strong></div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
                 )
 
             st.markdown(
@@ -209,6 +294,7 @@ with tab_metadata:
                     quote = fval.get("source_quote")
                     page_no = fval.get("page_number")
                     para_no = fval.get("paragraph_index")
+                    v_notes = fval.get("verification_notes")
                     loc_str = f"Page {page_no}" if page_no else (f"DOCX Para {para_no}" if para_no else None)
 
                     with target_col:
@@ -220,9 +306,11 @@ with tab_metadata:
                                 if is_missing:
                                     st.markdown("<span style='font-size:0.75rem; color:#94A3B8; float:right;'>⚪ Missing</span>", unsafe_allow_html=True)
                                 elif is_verified:
-                                    st.markdown("<span style='font-size:0.75rem; color:#16A36A; font-weight:700; float:right;'>🟢 Verified</span>", unsafe_allow_html=True)
+                                    st.markdown("<span style='font-size:0.75rem; color:#16A36A; font-weight:700; float:right;'>🟢 Verified Grounded</span>", unsafe_allow_html=True)
+                                elif v_notes and "location" in v_notes.lower():
+                                    st.markdown("<span style='font-size:0.75rem; color:#D97706; font-weight:700; float:right;' title='Citation mismatch'>🟡 Unverified Citation</span>", unsafe_allow_html=True)
                                 else:
-                                    st.markdown("<span style='font-size:0.75rem; color:#D97706; font-weight:700; float:right;'>🟡 Unverified</span>", unsafe_allow_html=True)
+                                    st.markdown("<span style='font-size:0.75rem; color:#DC4545; font-weight:700; float:right;' title='Insufficient evidence quote'>⚠️ Insufficient Evidence</span>", unsafe_allow_html=True)
 
                             if is_missing:
                                 st.markdown("<em style='color:#94A3B8; font-size:0.85rem;'>Not specified in contract</em>", unsafe_allow_html=True)
@@ -234,6 +322,9 @@ with tab_metadata:
 
                             if loc_str:
                                 st.markdown(f"<span style='font-size:0.72rem; color:#64748B;'>📍 {loc_str}</span>", unsafe_allow_html=True)
+
+                            if v_notes:
+                                st.markdown(f"<div style='font-size:0.72rem; color:#94A3B8; margin-top:0.2rem;'><em>Audit Note: {html.escape(v_notes)}</em></div>", unsafe_allow_html=True)
 
                             if quote:
                                 with st.expander("📖 Verbatim Evidence Quote"):

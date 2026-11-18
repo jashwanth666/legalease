@@ -11,12 +11,16 @@ from backend.database.models import Base
 _MIGRATION_COLUMNS: dict[str, dict[str, str]] = {
     "documents": {
         "tenant_id": "VARCHAR(64) NOT NULL DEFAULT 'default_tenant'",
+        "owner_id": "INTEGER",
         "gemini_status": "VARCHAR(32)",
         "fallback_used": "BOOLEAN NOT NULL DEFAULT 0",
         "fallback_reason": "TEXT",
         "last_error": "TEXT",
         "embedding_backend": "VARCHAR(64)",
         "metadata_json": "TEXT",
+        "current_stage": "VARCHAR(64) NOT NULL DEFAULT 'uploaded'",
+        "completed_stages_json": "TEXT",
+        "progress_percent": "INTEGER NOT NULL DEFAULT 0",
     },
     "clauses": {
         "end_page_number": "INTEGER",

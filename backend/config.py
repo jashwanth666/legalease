@@ -39,6 +39,10 @@ class Settings(BaseSettings):
 
     database_url: str = f"sqlite:///{(BASE_DIR / 'storage' / 'legalease.db').as_posix()}"
 
+    jwt_secret_key: str = "legalease-production-jwt-secret-key-change-in-env-32bytes"
+    jwt_algorithm: str = "HS256"
+    jwt_access_token_expire_minutes: int = 1440
+
     @property
     def max_upload_size_bytes(self) -> int:
         return self.max_upload_size_mb * 1024 * 1024

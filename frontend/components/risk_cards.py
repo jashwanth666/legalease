@@ -152,11 +152,17 @@ def render_risk_finding_card(finding: dict, index: int) -> None:
 
     badge = risk_badge_html(level)
     score_html = f"<span style='font-size:0.85rem; font-weight:700; color:{color};'>{score}/100</span>" if score is not None else "<span style='font-size:0.78rem; color:#748094;'>Unscored Routine Clause</span>"
+    v_notes = finding.get("verification_notes")
 
     if verified:
-        ver_pill = '<span style="background:#ECFDF5; color:#065F46; border:1px solid #A7F3D0; padding:0.15rem 0.5rem; border-radius:999px; font-size:0.72rem; font-weight:600;">✓ Verified Evidence</span>'
+        ver_pill = '<span style="background:#ECFDF5; color:#065F46; border:1px solid #A7F3D0; padding:0.18rem 0.55rem; border-radius:999px; font-size:0.72rem; font-weight:700;">🟢 Verified Grounded</span>'
+    elif v_notes and "location" in v_notes.lower():
+        ver_pill = f'<span style="background:#FFFBEB; color:#92400E; border:1px solid #FDE68A; padding:0.18rem 0.55rem; border-radius:999px; font-size:0.72rem; font-weight:700;" title="{html.escape(v_notes)}">🟡 Unverified Citation</span>'
     else:
-        ver_pill = '<span style="background:#FEF2F2; color:#991B1B; border:1px solid #FECACA; padding:0.15rem 0.5rem; border-radius:999px; font-size:0.72rem; font-weight:600;">⚠️ Unverified &bull; Review Required</span>'
+        note_title = html.escape(v_notes) if v_notes else "Insufficient verbatim quote match"
+        ver_pill = f'<span style="background:#FEF2F2; color:#991B1B; border:1px solid #FECACA; padding:0.18rem 0.55rem; border-radius:999px; font-size:0.72rem; font-weight:700;" title="{note_title}">⚠️ Insufficient Evidence</span>'
+
+    notes_html = f"<div style='font-size:0.75rem; color:#D97706; margin-top:0.35rem;'><em>Audit Note: {html.escape(v_notes)}</em></div>" if (v_notes and not verified) else ""
 
     st.markdown(
         f"""
@@ -183,6 +189,8 @@ def render_risk_finding_card(finding: dict, index: int) -> None:
             <!-- Finding Type & Summary -->
             <div style="font-size:0.85rem; color:#172033; line-height:1.55; margin-bottom:0.75rem;">
                 <strong style="color:#101B35;">Explanation:</strong> {html.escape(str(finding.get('explanation', '')))}
+                {notes_html}
+            </div>
             </div>
 
             <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:0.75rem; margin-top:0.65rem;">

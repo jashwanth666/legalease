@@ -321,6 +321,123 @@ class SummaryAgent:
         return True, None
 
     @staticmethod
+    def _verify_source_location(
+        quote: str,
+        page_number: int | None,
+        paragraph_index: int | None,
+        location_type: str,
+        pdf_page_text_map: dict[int, str],
+        docx_para_text_map: dict[int, str],
+        extracted_text: str,
+        clauses: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Verify whether quote appears in the document and specifically on the cited page/paragraph."""
+        quote_clean = " ".join(quote.lower().split())
+        if not quote_clean:
+            return {
+                "quote_exists": False,
+                "exact_location_valid": False,
+                "note": "Quotation is empty.",
+            }
+
+        full_doc_text = " ".join(extracted_text.lower().split()) if extracted_text else ""
+        quote_exists = (
+            (bool(full_doc_text) and quote_clean in full_doc_text)
+            or any(quote_clean in " ".join(txt.lower().split()) for txt in pdf_page_text_map.values())
+            or any(quote_clean in " ".join(txt.lower().split()) for txt in docx_para_text_map.values())
+            or any(quote_clean in " ".join(c.get("original_text", "").lower().split()) for c in clauses)
+        )
+
+        if not quote_exists:
+            return {
+                "quote_exists": False,
+                "exact_location_valid": False,
+                "note": "Quotation not found anywhere in document text.",
+            }
+
+        # Validate exact location for DOCX
+        if location_type == "docx_paragraph" or paragraph_index is not None:
+            if paragraph_index is not None and paragraph_index in docx_para_text_map:
+                para_clean = " ".join(docx_para_text_map[paragraph_index].lower().split())
+                if quote_clean in para_clean:
+                    return {"quote_exists": True, "exact_location_valid": True, "note": None}
+
+            # Check if any clause with cited paragraph index matches
+            if paragraph_index is not None:
+                for c in clauses:
+                    if c.get("paragraph_index") == paragraph_index:
+                        if quote_clean in " ".join(c.get("original_text", "").lower().split()):
+                            return {"quote_exists": True, "exact_location_valid": True, "note": None}
+
+            # Quotation exists elsewhere, but NOT in cited paragraph!
+            actual_paras = [
+                idx for idx, txt in docx_para_text_map.items()
+                if quote_clean in " ".join(txt.lower().split())
+            ]
+            if not actual_paras:
+                actual_paras = [
+                    c.get("paragraph_index") for c in clauses
+                    if c.get("paragraph_index") is not None
+                    and quote_clean in " ".join(c.get("original_text", "").lower().split())
+                ]
+
+            if actual_paras:
+                actual_str = ", ".join(str(p) for p in sorted(set(actual_paras))[:3])
+                return {
+                    "quote_exists": True,
+                    "exact_location_valid": False,
+                    "note": f"Quotation found in paragraph {actual_str}, but not in cited paragraph {paragraph_index}.",
+                }
+            return {
+                "quote_exists": True,
+                "exact_location_valid": False,
+                "note": f"Quotation found in document, but not in cited paragraph {paragraph_index}.",
+            }
+
+        # Validate exact location for PDF
+        if page_number is not None:
+            if page_number in pdf_page_text_map:
+                page_clean = " ".join(pdf_page_text_map[page_number].lower().split())
+                if quote_clean in page_clean:
+                    return {"quote_exists": True, "exact_location_valid": True, "note": None}
+
+            for c in clauses:
+                if c.get("page_number") == page_number:
+                    if quote_clean in " ".join(c.get("original_text", "").lower().split()):
+                        return {"quote_exists": True, "exact_location_valid": True, "note": None}
+
+            # Quotation exists elsewhere, but NOT on cited page!
+            actual_pages = [
+                p_no for p_no, txt in pdf_page_text_map.items()
+                if quote_clean in " ".join(txt.lower().split())
+            ]
+            if not actual_pages:
+                actual_pages = [
+                    c.get("page_number") for c in clauses
+                    if c.get("page_number") is not None
+                    and quote_clean in " ".join(c.get("original_text", "").lower().split())
+                ]
+
+            if actual_pages:
+                actual_str = ", ".join(str(p) for p in sorted(set(actual_pages))[:3])
+                return {
+                    "quote_exists": True,
+                    "exact_location_valid": False,
+                    "note": f"Quotation found on page {actual_str}, but not on cited page {page_number}.",
+                }
+            return {
+                "quote_exists": True,
+                "exact_location_valid": False,
+                "note": f"Quotation found in document, but not on cited page {page_number}.",
+            }
+
+        return {
+            "quote_exists": True,
+            "exact_location_valid": False,
+            "note": "No specific page or paragraph location cited.",
+        }
+
+    @staticmethod
     def verify_evidence(
         pages: list[dict[str, Any]],
         clauses: list[dict[str, Any]],
@@ -335,50 +452,32 @@ class SummaryAgent:
         """Verify risk findings, template comparisons, missing clauses, and metadata against source evidence."""
         clause_map = {c["clause_id"]: c for c in clauses}
 
-        # Build actual sets of valid paragraph indices from DOCX blocks/clauses
-        valid_paragraph_indices: set[int] = set()
-        for p in pages:
-            if p.get("location_type") == "docx_paragraph":
-                for b in p.get("blocks", []):
-                    b_idx = b.get("paragraph_index")
-                    if isinstance(b_idx, int):
-                        valid_paragraph_indices.add(b_idx)
-                p_idx = p.get("paragraph_index")
-                if isinstance(p_idx, int):
-                    valid_paragraph_indices.add(p_idx)
-        for c in clauses:
-            c_idx = c.get("paragraph_index")
-            if isinstance(c_idx, int):
-                valid_paragraph_indices.add(c_idx)
-
-        # Build actual sets of valid PDF page numbers
-        valid_pdf_pages: set[int] = set()
+        # Build exact text lookup maps for PDF pages and DOCX paragraphs
+        pdf_page_text_map: dict[int, str] = {}
         for p in pages:
             p_no = p.get("page_number")
             if isinstance(p_no, int):
-                valid_pdf_pages.add(p_no)
+                pdf_page_text_map[p_no] = p.get("text", "")
+        if (not pdf_page_text_map or (len(pdf_page_text_map) == 1 and not next(iter(pdf_page_text_map.values())))) and extracted_text:
+            pdf_page_text_map[1] = extracted_text
+
+        docx_para_text_map: dict[int, str] = {}
+        for p in pages:
+            for b in p.get("blocks", []):
+                b_idx = b.get("paragraph_index")
+                if isinstance(b_idx, int):
+                    docx_para_text_map[b_idx] = b.get("text", "")
+            p_idx = p.get("paragraph_index")
+            if isinstance(p_idx, int) and p_idx not in docx_para_text_map:
+                docx_para_text_map[p_idx] = p.get("text", "")
         for c in clauses:
-            c_no = c.get("page_number")
-            if isinstance(c_no, int):
-                valid_pdf_pages.add(c_no)
+            c_idx = c.get("paragraph_index")
+            if isinstance(c_idx, int) and c_idx not in docx_para_text_map:
+                docx_para_text_map[c_idx] = c.get("original_text", "")
 
+        valid_paragraph_indices = set(docx_para_text_map.keys())
+        valid_pdf_pages = set(pdf_page_text_map.keys())
         is_docx = any(p.get("location_type") == "docx_paragraph" for p in pages) or bool(valid_paragraph_indices)
-        max_page = max(valid_pdf_pages) if valid_pdf_pages else 1
-        max_paragraph = max(valid_paragraph_indices) if valid_paragraph_indices else len(clauses)
-
-        def _is_valid_paragraph(para_idx: Any) -> bool:
-            if not isinstance(para_idx, int):
-                return False
-            if valid_paragraph_indices:
-                return para_idx in valid_paragraph_indices
-            return 1 <= para_idx <= max_paragraph
-
-        def _is_valid_page(page_no: Any) -> bool:
-            if not isinstance(page_no, int):
-                return False
-            if valid_pdf_pages:
-                return page_no in valid_pdf_pages
-            return 1 <= page_no <= max_page
 
         detected_cats = {
             c["category"]
@@ -389,35 +488,67 @@ class SummaryAgent:
         unverified_count = 0
         verification_notes: list[str] = []
 
+        # 1. Verify Risk Findings
         for finding in risk_results:
             cid = finding.get("clause_id")
             src_clause = clause_map.get(cid)
-            loc_type = finding.get("location_type") or (src_clause.get("location_type") if src_clause else "pdf_page")
-            orig_text = (finding.get("original_clause") or "").strip()
+            loc_type = finding.get("location_type") or (src_clause.get("location_type") if src_clause else ("docx_paragraph" if is_docx else "pdf_page"))
+            orig_text = (finding.get("original_clause") or (src_clause.get("original_text") if src_clause else "")).strip()
             explanation = (finding.get("explanation") or "").strip()
+            page_no = finding.get("page_number") or (src_clause.get("page_number") if src_clause else None)
+            para_idx = finding.get("paragraph_index") or (src_clause.get("paragraph_index") if src_clause else None)
 
-            if loc_type == "docx_paragraph" or is_docx:
-                para_idx = finding.get("paragraph_index")
-                loc_valid = _is_valid_paragraph(para_idx)
-            else:
-                page_no = finding.get("page_number")
-                loc_valid = _is_valid_page(page_no)
-
-            valid = (
+            source_clause_matched = (
                 src_clause is not None
                 and bool(orig_text)
-                and orig_text == src_clause["original_text"].strip()
-                and loc_valid
-                and bool(explanation)
+                and orig_text == src_clause.get("original_text", "").strip()
+            )
+
+            loc_check = SummaryAgent._verify_source_location(
+                quote=orig_text,
+                page_number=page_no,
+                paragraph_index=para_idx,
+                location_type=loc_type,
+                pdf_page_text_map=pdf_page_text_map,
+                docx_para_text_map=docx_para_text_map,
+                extracted_text=extracted_text,
+                clauses=clauses,
+            )
+
+            interpretation_grounded = bool(explanation)
+
+            finding["verification_checks"] = {
+                "quote_exists": loc_check["quote_exists"],
+                "exact_location_valid": loc_check["exact_location_valid"],
+                "source_clause_matched": source_clause_matched,
+                "interpretation_grounded": interpretation_grounded,
+            }
+
+            valid = (
+                source_clause_matched
+                and loc_check["quote_exists"]
+                and loc_check["exact_location_valid"]
+                and interpretation_grounded
             )
             finding["verified"] = valid
             if not valid:
                 unverified_count += 1
-                finding["verification_note"] = (
-                    "Could not fully verify clause ID, exact text match, or location reference."
-                )
-                verification_notes.append(f"Risk finding for {cid} marked unverified.")
+                reasons = []
+                if not source_clause_matched:
+                    reasons.append("source clause text or ID does not match extracted clauses")
+                if not loc_check["quote_exists"]:
+                    reasons.append("clause text not found in document")
+                elif not loc_check["exact_location_valid"]:
+                    reasons.append(loc_check["note"] or "exact location mismatch")
+                if not interpretation_grounded:
+                    reasons.append("finding marked as uncertain or lacks grounded explanation")
+                note_str = "; ".join(reasons).capitalize() + "."
+                finding["verification_note"] = note_str
+                verification_notes.append(f"Risk finding for {cid} marked unverified: {note_str}")
+            else:
+                finding["verification_note"] = None
 
+        # 2. Verify Template Comparisons
         for comp in comparison_results:
             cid = comp.get("clause_id")
             refs = retrieved_references.get(cid, [])
@@ -427,6 +558,12 @@ class SummaryAgent:
             if comp.get("insufficient_evidence"):
                 comp["verified"] = False
                 unverified_count += 1
+                comp["verification_checks"] = {
+                    "quote_exists": False,
+                    "exact_location_valid": False,
+                    "value_supported": False,
+                    "interpretation_grounded": False,
+                }
                 comp["verification_note"] = (
                     "Insufficient reference evidence: retrieved similarity below threshold or empty."
                 )
@@ -435,19 +572,28 @@ class SummaryAgent:
                 )
                 continue
 
-            valid = any(
+            ref_matched = any(
                 r.get("text", "").strip() == ref_text
                 and r.get("reference_source", "").strip() == ref_source
                 for r in refs
             )
-            comp["verified"] = valid
-            if not valid:
+            comp["verification_checks"] = {
+                "quote_exists": True,
+                "exact_location_valid": True,
+                "value_supported": ref_matched,
+                "interpretation_grounded": ref_matched,
+            }
+            comp["verified"] = ref_matched
+            if not ref_matched:
                 unverified_count += 1
                 comp["verification_note"] = (
-                    "Retrieved reference wording or source could not be confirmed."
+                    "Retrieved reference wording or source could not be confirmed in template store."
                 )
                 verification_notes.append(f"Comparison for {cid} marked unverified.")
+            else:
+                comp["verification_note"] = None
 
+        # 3. Verify Missing Clauses
         verified_missing = []
         for item in missing_clauses.get("missing_categories", []):
             cat = item.get("category")
@@ -457,14 +603,18 @@ class SummaryAgent:
                 unverified_count += 1
             else:
                 item["verified"] = True
+                item["verification_note"] = None
             verified_missing.append(item)
         missing_clauses["missing_categories"] = verified_missing
 
+        # 4. Verify 16 Contract Metadata Fields with Exact Location & Value Support
         verified_metadata_count = 0
+        total_metadata_fields = 0
         if contract_metadata and isinstance(contract_metadata, dict):
             for k, val in contract_metadata.items():
                 if not isinstance(val, dict) or k in ("document_id", "extraction_source", "completeness_score"):
                     continue
+                total_metadata_fields += 1
                 quote = (val.get("source_quote") or "").strip()
                 value = val.get("value")
                 is_missing = val.get("is_missing", False)
@@ -472,29 +622,41 @@ class SummaryAgent:
 
                 if is_missing or value is None or not quote:
                     val["verified"] = False
+                    val["verification_checks"] = {
+                        "quote_exists": False,
+                        "exact_location_valid": False,
+                        "value_supported": False,
+                        "interpretation_grounded": True,
+                    }
                     continue
 
-                # 1. Location reference validation
-                if loc_type == "docx_paragraph" or is_docx:
-                    loc_idx = val.get("paragraph_index")
-                    loc_valid = _is_valid_paragraph(loc_idx)
-                    loc_label = f"DOCX paragraph {loc_idx}"
-                else:
-                    page_no = val.get("page_number")
-                    loc_valid = _is_valid_page(page_no)
-                    loc_label = f"Page {page_no}"
+                page_no = val.get("page_number")
+                para_idx = val.get("paragraph_index")
 
-                # 2. Quotation grounding verification
-                quote_matched = (
-                    (bool(extracted_text) and quote.lower() in extracted_text.lower())
-                    or any(quote.lower() in c.get("original_text", "").lower() for c in clauses)
+                # Run exact location verification
+                loc_check = SummaryAgent._verify_source_location(
+                    quote=quote,
+                    page_number=page_no,
+                    paragraph_index=para_idx,
+                    location_type=loc_type,
+                    pdf_page_text_map=pdf_page_text_map,
+                    docx_para_text_map=docx_para_text_map,
+                    extracted_text=extracted_text,
+                    clauses=clauses,
                 )
 
-                # 3. Value-to-quote semantic support validation
+                # Run value semantic support check
                 value_supported, val_err = SummaryAgent._validate_metadata_value_support(k, value, quote)
+                interpretation_grounded = not val.get("is_uncertain", False) and value_supported
 
-                # Field is ONLY verified if quotation matches, location is valid, AND value is supported
-                if quote_matched and loc_valid and value_supported:
+                val["verification_checks"] = {
+                    "quote_exists": loc_check["quote_exists"],
+                    "exact_location_valid": loc_check["exact_location_valid"],
+                    "value_supported": value_supported,
+                    "interpretation_grounded": interpretation_grounded,
+                }
+
+                if loc_check["quote_exists"] and loc_check["exact_location_valid"] and value_supported and interpretation_grounded:
                     val["verified"] = True
                     val["notes"] = None
                     verified_metadata_count += 1
@@ -502,21 +664,52 @@ class SummaryAgent:
                     val["verified"] = False
                     unverified_count += 1
                     reasons = []
-                    if not quote_matched:
+                    if not loc_check["quote_exists"]:
                         reasons.append("source quote not found verbatim in contract text")
-                    if not loc_valid:
-                        reasons.append(f"invalid location reference ({loc_label})")
+                    elif not loc_check["exact_location_valid"]:
+                        loc_detail = loc_check["note"] or "location mismatch"
+                        reasons.append(f"invalid location reference ({loc_detail})")
                     if not value_supported:
                         reasons.append(val_err or "extracted value is not supported by cited quote")
+                    if val.get("is_uncertain"):
+                        reasons.append("field marked as uncertain by extraction model")
                     note_msg = "; ".join(reasons).capitalize() + "."
                     val["notes"] = note_msg
                     verification_notes.append(f"Metadata field '{k}' marked unverified: {note_msg}")
 
+        verified_risk_count = sum(1 for r in risk_results if r.get("verified"))
+        verified_comp_count = sum(1 for c in comparison_results if c.get("verified"))
+        total_findings = len(risk_results) + len(comparison_results) + total_metadata_fields + len(missing_clauses.get("missing_categories", []))
+        total_verified = verified_risk_count + verified_comp_count + verified_metadata_count + sum(1 for m in missing_clauses.get("missing_categories", []) if m.get("verified"))
+
         return {
             "all_verified": unverified_count == 0,
             "unverified_count": unverified_count,
-            "verified_risk_count": sum(1 for r in risk_results if r.get("verified")),
-            "verified_comparison_count": sum(1 for c in comparison_results if c.get("verified")),
+            "total_findings": total_findings,
+            "total_verified": total_verified,
+            "total_unverified": unverified_count,
+            "risks": {
+                "total": len(risk_results),
+                "verified": verified_risk_count,
+                "unverified": len(risk_results) - verified_risk_count,
+            },
+            "comparisons": {
+                "total": len(comparison_results),
+                "verified": verified_comp_count,
+                "unverified": len(comparison_results) - verified_comp_count,
+            },
+            "metadata": {
+                "total": total_metadata_fields,
+                "verified": verified_metadata_count,
+                "unverified": total_metadata_fields - verified_metadata_count,
+            },
+            "missing_clauses": {
+                "total": len(missing_clauses.get("missing_categories", [])),
+                "verified": sum(1 for m in missing_clauses.get("missing_categories", []) if m.get("verified")),
+                "unverified": sum(1 for m in missing_clauses.get("missing_categories", []) if not m.get("verified")),
+            },
+            "verified_risk_count": verified_risk_count,
+            "verified_comparison_count": verified_comp_count,
             "verified_metadata_count": verified_metadata_count,
             "notes": verification_notes,
         }

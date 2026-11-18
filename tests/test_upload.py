@@ -13,6 +13,7 @@ from backend.config import Settings, get_settings
 from backend.database.db import configure_database
 from backend.guardrails.document_guard import DocumentValidationError, resolve_contained_path
 from backend.main import create_app
+from tests.conftest import create_test_user
 
 
 class _TestSettings(Settings):
@@ -49,7 +50,9 @@ def client(tmp_path: Path):
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: test_settings
 
+    _, token = create_test_user(secret_key=test_settings.jwt_secret_key)
     with TestClient(app) as test_client:
+        test_client.headers["Authorization"] = f"Bearer {token}"
         yield test_client, test_settings
 
     app.dependency_overrides.clear()

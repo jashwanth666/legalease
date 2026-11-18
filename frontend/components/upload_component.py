@@ -178,7 +178,7 @@ def render_upload_workflow(client: LegalEaseAPIClient) -> None:
                             status_data = client.get_status(selected_id)
                             curr_status = status_data.get("processing_status", "processing")
                             curr_pct = float(status_data.get("progress_percent", 50)) / 100.0
-                            stage_desc = status_data.get("stage", "Analyzing contract...")
+                            stage_desc = status_data.get("stage_label") or status_data.get("current_stage", "Analyzing contract...")
                             progress_bar.progress(min(max(curr_pct, 0.1), 1.0), text=f"Stage: {stage_desc}")
 
                             if curr_status == "analyzed":

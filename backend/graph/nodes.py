@@ -39,6 +39,52 @@ from backend.services.scoring_service import calculate_overall_risk_overview
 
 logger = logging.getLogger(__name__)
 
+STAGE_PROGRESS: dict[str, int] = {
+    "document_validation": 8,
+    "text_extraction": 16,
+    "ocr": 24,
+    "clause_splitting": 32,
+    "clause_classification": 40,
+    "risk_assessment": 50,
+    "template_comparison": 60,
+    "missing_clause_detection": 68,
+    "metadata_extraction": 76,
+    "evidence_verification": 84,
+    "summary_generation": 92,
+    "pdf_generation": 100,
+}
+
+ALL_WORKFLOW_STAGES: list[str] = list(STAGE_PROGRESS.keys())
+
+
+def record_stage_progress(document_id: str, stage_name: str) -> None:
+    """Idempotently persist real-time workflow stage progress into SQLite."""
+    if not document_id:
+        return
+    session = db_module.SessionLocal()
+    try:
+        doc = session.query(Document).filter(Document.document_id == document_id).first()
+        if doc is not None:
+            doc.current_stage = stage_name
+            target_pct = STAGE_PROGRESS.get(stage_name, doc.progress_percent or 0)
+            if target_pct > (doc.progress_percent or 0):
+                doc.progress_percent = target_pct
+
+            try:
+                completed = json.loads(doc.completed_stages_json or "[]")
+            except Exception:
+                completed = []
+            if stage_name not in completed:
+                completed.append(stage_name)
+            doc.completed_stages_json = json.dumps(completed)
+            if doc.processing_status in ("queued", "uploaded"):
+                doc.processing_status = "processing"
+            session.commit()
+    except Exception as exc:
+        logger.warning("Could not record stage progress for %s (%s): %s", document_id, stage_name, exc)
+    finally:
+        session.close()
+
 
 def _resolve_runtime_paths(state: dict[str, Any]) -> dict[str, Any]:
     settings = get_settings()
@@ -56,6 +102,7 @@ def _resolve_runtime_paths(state: dict[str, Any]) -> dict[str, Any]:
 
 def validate_document_node(state: dict[str, Any]) -> dict[str, Any]:
     """Validate document presence and binary integrity before extraction."""
+    record_stage_progress(state.get("document_id", ""), "document_validation")
     cfg = _resolve_runtime_paths(state)
     file_path = Path(state["file_path"])
     filename = state["filename"]
@@ -80,6 +127,7 @@ def validate_document_node(state: dict[str, Any]) -> dict[str, Any]:
 
 def extract_document_text_node(state: dict[str, Any]) -> dict[str, Any]:
     """Extract or load structured location-referenced text for the contract."""
+    record_stage_progress(state.get("document_id", ""), "text_extraction")
     cfg = _resolve_runtime_paths(state)
     document_id = state["document_id"]
     agent = ExtractionAgent()
@@ -111,6 +159,7 @@ def extract_document_text_node(state: dict[str, Any]) -> dict[str, Any]:
 
 def ocr_node(state: dict[str, Any]) -> dict[str, Any]:
     """Run OCR on a scanned PDF and update pages/extracted_text in state."""
+    record_stage_progress(state.get("document_id", ""), "ocr")
     file_path = Path(state.get("file_path", ""))
     if not file_path.exists():
         return {
@@ -158,6 +207,7 @@ def ocr_node(state: dict[str, Any]) -> dict[str, Any]:
 
 def split_into_clauses_node(state: dict[str, Any]) -> dict[str, Any]:
     """Segment extracted pages/paragraphs into complete legal clauses preserving locations."""
+    record_stage_progress(state.get("document_id", ""), "clause_splitting")
     try:
         pages = state.get("pages", [])
         clauses = split_pages_into_clauses(pages)
@@ -182,6 +232,7 @@ def split_into_clauses_node(state: dict[str, Any]) -> dict[str, Any]:
 
 async def classify_clauses_node(state: dict[str, Any]) -> dict[str, Any]:
     """Classify each extracted clause using Gemini or explicit deterministic fallback."""
+    record_stage_progress(state.get("document_id", ""), "clause_classification")
     try:
         cfg = _resolve_runtime_paths(state)
         clauses = [ExtractedClause.model_validate(c) for c in state.get("clauses", [])]
@@ -202,6 +253,7 @@ async def classify_clauses_node(state: dict[str, Any]) -> dict[str, Any]:
 
 async def risk_assessment_node(state: dict[str, Any]) -> dict[str, Any]:
     """Assess clause risks using Gemini/fallback reasoning and Python risk scoring."""
+    record_stage_progress(state.get("document_id", ""), "risk_assessment")
     try:
         cfg = _resolve_runtime_paths(state)
         clauses = [ExtractedClause.model_validate(c) for c in state.get("clauses", [])]
@@ -224,6 +276,7 @@ async def risk_assessment_node(state: dict[str, Any]) -> dict[str, Any]:
 
 async def rag_template_comparison_node(state: dict[str, Any]) -> dict[str, Any]:
     """Retrieve relevant illustrative reference clauses via FAISS and compare clauses."""
+    record_stage_progress(state.get("document_id", ""), "template_comparison")
     try:
         cfg = _resolve_runtime_paths(state)
         clauses = [ExtractedClause.model_validate(c) for c in state.get("clauses", [])]
@@ -263,6 +316,7 @@ async def rag_template_comparison_node(state: dict[str, Any]) -> dict[str, Any]:
 
 def missing_clause_detection_node(state: dict[str, Any]) -> dict[str, Any]:
     """Compare classified clause categories against the contract-type checklist."""
+    record_stage_progress(state.get("document_id", ""), "missing_clause_detection")
     try:
         contract_type = state.get("contract_type") or "General Commercial Agreement"
         classified_clauses = state.get("classified_clauses", [])
@@ -275,6 +329,7 @@ def missing_clause_detection_node(state: dict[str, Any]) -> dict[str, Any]:
 
 async def extract_metadata_node(state: dict[str, Any]) -> dict[str, Any]:
     """Extract structured 16-field contract metadata with grounded evidence."""
+    record_stage_progress(state.get("document_id", ""), "metadata_extraction")
     try:
         cfg = _resolve_runtime_paths(state)
         llm = LLMService(api_key=cfg["api_key"], model_name=cfg["model_name"])
@@ -338,6 +393,7 @@ def merge_results_node(state: dict[str, Any]) -> dict[str, Any]:
 
 def verify_evidence_node(state: dict[str, Any]) -> dict[str, Any]:
     """Verify every risk finding, comparison, missing clause, and metadata item against source evidence."""
+    record_stage_progress(state.get("document_id", ""), "evidence_verification")
     try:
         risk_results = list(state.get("risk_results", []))
         comparison_results = list(state.get("comparison_results", []))
@@ -369,6 +425,7 @@ def verify_evidence_node(state: dict[str, Any]) -> dict[str, Any]:
 
 async def generate_summary_node(state: dict[str, Any]) -> dict[str, Any]:
     """Generate a plain-English executive summary from verified findings."""
+    record_stage_progress(state.get("document_id", ""), "summary_generation")
     try:
         cfg = _resolve_runtime_paths(state)
         risk_models = [RiskFinding.model_validate(r) for r in state.get("risk_results", [])]
@@ -540,6 +597,7 @@ def generate_pdf_node(state: dict[str, Any]) -> dict[str, Any]:
 
     cfg = _resolve_runtime_paths(state)
     document_id = state["document_id"]
+    record_stage_progress(document_id, "pdf_generation")
     try:
         report_path = resolve_contained_path(
             cfg["reports_dir"], cfg["reports_dir"] / f"LegalEase_Report_{document_id}.pdf"
@@ -582,6 +640,7 @@ def generate_pdf_node(state: dict[str, Any]) -> dict[str, Any]:
             risk_results=state.get("risk_results", []),
             comparisons=state.get("comparison_results", []),
             missing_clauses=state.get("missing_clauses", {}),
+            verification_summary=state.get("verified_findings", {}),
         )
     except Exception as exc:
         logger.exception("PDF report generation failed for document_id=%s", document_id)
@@ -595,6 +654,8 @@ def generate_pdf_node(state: dict[str, Any]) -> dict[str, Any]:
         db.query(AnalysisReport).filter(AnalysisReport.document_id == document_id).delete()
         db.add(AnalysisReport(document_id=document_id, report_path=str(report_path)))
         doc.processing_status = "analyzed"
+        doc.current_stage = "completed"
+        doc.progress_percent = 100
         doc.last_error = None
         db.commit()
     except Exception as exc:

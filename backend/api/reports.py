@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
+from backend.auth.deps import get_current_user
 from backend.config import Settings, get_settings
 from backend.database import (
     AnalysisReport,
@@ -14,6 +15,7 @@ from backend.database import (
     Comparison,
     Document,
     RiskAssessment,
+    User,
     get_db,
 )
 from backend.guardrails.document_guard import DocumentValidationError, resolve_contained_path
@@ -26,14 +28,18 @@ router = APIRouter(prefix="/api", tags=["Reports"])
 
 @router.get("/reports")
 def list_reports(
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
-    """List generated analysis reports ordered newest first."""
+    """List generated analysis reports ordered newest first, scoped strictly to user's tenant."""
     reports = (
         db.query(AnalysisReport, Document)
         .join(Document, AnalysisReport.document_id == Document.document_id)
-        .filter(Document.processing_status == "analyzed")
+        .filter(
+            Document.processing_status == "analyzed",
+            Document.tenant_id == current_user.tenant_id,
+        )
         .order_by(AnalysisReport.created_at.desc())
         .all()
     )
@@ -64,11 +70,15 @@ def list_reports(
 def download_report(
     document_id: str,
     regenerate: bool = True,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
-    """Download the generated PDF analysis report for a document."""
-    doc = db.query(Document).filter(Document.document_id == document_id).first()
+    """Download the generated PDF analysis report for a document with tenant authorization."""
+    doc = db.query(Document).filter(
+        Document.document_id == document_id,
+        Document.tenant_id == current_user.tenant_id,
+    ).first()
     if not doc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

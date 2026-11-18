@@ -21,16 +21,29 @@ class APIError(Exception):
 class LegalEaseAPIClient:
     """Synchronous REST client for LegalEase FastAPI endpoints."""
 
-    def __init__(self, base_url: str | None = None, timeout: float | tuple[float, float] = (10.0, 180.0)) -> None:
+    def __init__(
+        self,
+        base_url: str | None = None,
+        token: str | None = None,
+        timeout: float | tuple[float, float] = (10.0, 180.0),
+    ) -> None:
         self.base_url = (base_url or DEFAULT_API_BASE_URL).rstrip("/")
+        self.token = token
         self.timeout = timeout
         self.session = requests.Session()
         if "127.0.0.1" in self.base_url or "localhost" in self.base_url:
             self.session.trust_env = False
 
+    def set_token(self, token: str | None) -> None:
+        self.token = token
+
     def _request(self, method: str, path: str, **kwargs) -> requests.Response:
         url = f"{self.base_url}{path}"
         kwargs.setdefault("timeout", self.timeout)
+        headers = dict(kwargs.get("headers") or {})
+        if self.token and "Authorization" not in headers:
+            headers["Authorization"] = f"Bearer {self.token}"
+        kwargs["headers"] = headers
         try:
             response = self.session.request(method, url, **kwargs)
         except requests.Timeout as exc:
@@ -54,6 +67,34 @@ class LegalEaseAPIClient:
             raise APIError(detail, status_code=response.status_code)
 
         return response
+
+    def register(
+        self,
+        email: str,
+        password: str,
+        full_name: str,
+        role: str = "employee",
+        tenant_id: str = "default_tenant",
+    ) -> dict[str, Any]:
+        payload = {
+            "email": email,
+            "password": password,
+            "full_name": full_name,
+            "role": role,
+            "tenant_id": tenant_id,
+        }
+        return self._request("POST", "/api/auth/register", json=payload).json()
+
+    def login(self, email: str, password: str) -> dict[str, Any]:
+        payload = {"email": email, "password": password}
+        res = self._request("POST", "/api/auth/login", json=payload).json()
+        token = res.get("access_token")
+        if token:
+            self.set_token(token)
+        return res
+
+    def get_me(self) -> dict[str, Any]:
+        return self._request("GET", "/api/auth/me").json()
 
     def health(self) -> dict[str, Any]:
         return self._request("GET", "/health", timeout=5.0).json()

@@ -1,3 +1,9 @@
+from backend.schemas.auth import (
+    TokenResponse,
+    UserLoginRequest,
+    UserRegisterRequest,
+    UserResponse,
+)
 from backend.schemas.clause import (
     ALL_CLAUSE_CATEGORIES,
     CLAUSE_CATEGORIES,

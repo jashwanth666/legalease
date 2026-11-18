@@ -22,11 +22,31 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(255), nullable=False)
+    full_name = Column(String(255), nullable=True)
+    role = Column(String(32), nullable=False, default="employee")  # admin, legal_reviewer, employee
+    tenant_id = Column(String(64), nullable=False, default="default_tenant", index=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    documents = relationship("Document", back_populates="owner")
+
+    __table_args__ = (
+        Index("ix_users_tenant_role", "tenant_id", "role"),
+    )
+
+
 class Document(Base):
     __tablename__ = "documents"
 
     id = Column(Integer, primary_key=True, index=True)
     tenant_id = Column(String(64), nullable=False, default="default_tenant", index=True)
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     document_id = Column(String(32), unique=True, nullable=False, index=True)
     filename = Column(String(255), nullable=False)
     stored_filename = Column(String(255), nullable=False)
@@ -34,6 +54,9 @@ class Document(Base):
     file_size = Column(Integer, nullable=False)
     upload_date = Column(DateTime(timezone=True), default=utcnow, nullable=False)
     processing_status = Column(String(32), default="uploaded", nullable=False)
+    current_stage = Column(String(64), default="uploaded", nullable=False)
+    completed_stages_json = Column(Text, nullable=True)
+    progress_percent = Column(Integer, default=0, nullable=False)
 
     page_count = Column(Integer, default=0, nullable=False)
     ocr_required = Column(Boolean, default=False, nullable=False)
@@ -50,6 +73,7 @@ class Document(Base):
     last_error = Column(Text, nullable=True)
     embedding_backend = Column(String(64), nullable=True)
 
+    owner = relationship("User", back_populates="documents")
     clauses = relationship(
         "Clause", back_populates="document", cascade="all, delete-orphan"
     )

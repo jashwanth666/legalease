@@ -10,6 +10,7 @@ import pytest
 from backend.config import Settings, get_settings
 from backend.database.db import configure_database
 from backend.main import create_app
+from tests.conftest import create_test_user
 
 
 SAMPLE_DIR = Path(__file__).resolve().parent.parent / "data" / "sample_contracts"
@@ -50,7 +51,9 @@ def eval_client(tmp_path: Path):
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: test_settings
 
+    _, token = create_test_user(secret_key=test_settings.jwt_secret_key)
     with TestClient(app) as client:
+        client.headers["Authorization"] = f"Bearer {token}"
         yield client, test_settings
 
     app.dependency_overrides.clear()

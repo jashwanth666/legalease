@@ -3,10 +3,27 @@
 from dataclasses import asdict
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
-import faiss
+import sys
+
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
+_DISABLE_FAISS = os.environ.get(
+    "LEGALEASE_DISABLE_FAISS", "1" if sys.platform == "win32" else "0"
+).lower() in ("1", "true", "yes")
+
+_FAISS_AVAILABLE = False
+faiss = None
+if not _DISABLE_FAISS:
+    try:
+        import faiss  # type: ignore
+        _FAISS_AVAILABLE = True
+    except Exception:
+        faiss = None
+        _FAISS_AVAILABLE = False
 import numpy as np
 
 from backend.ingestion.template_loader import ReferenceClause, load_reference_clauses
@@ -29,8 +46,10 @@ class ReferenceVectorStore:
         self.templates_dir = templates_dir
         self.embedding_service = embedding_service or EmbeddingService()
         self.index_path = self.vectorstore_dir / "reference_clauses.faiss"
+        self.vectors_path = self.vectorstore_dir / "reference_vectors.npy"
         self.meta_path = self.vectorstore_dir / "reference_clauses.json"
-        self.index: faiss.IndexFlatIP | None = None
+        self.index: Any = None
+        self.vectors: np.ndarray | None = None
         self.records: list[dict[str, Any]] = []
         self.metadata: dict[str, Any] = {}
 
@@ -68,13 +87,24 @@ class ReferenceVectorStore:
             for c in clauses
         ]
         vectors = np.array(self.embedding_service.embed_documents(texts), dtype=np.float32)
-        faiss.normalize_L2(vectors)
+        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        vectors = vectors / norms
+        self.vectors = vectors
 
         dim = int(vectors.shape[1])
-        index = faiss.IndexFlatIP(dim)
-        index.add(vectors)
+        if _FAISS_AVAILABLE and faiss is not None:
+            try:
+                index = faiss.IndexFlatIP(dim)
+                index.add(vectors)
+                self.index = index
+                faiss.write_index(self.index, str(self.index_path))
+            except Exception:
+                self.index = None
+        else:
+            self.index = None
 
-        self.index = index
+        np.save(str(self.vectors_path), self.vectors)
         self.records = [asdict(c) for c in clauses]
         self.metadata = {
             "embedding_backend": self.embedding_service.backend_name,
@@ -87,7 +117,6 @@ class ReferenceVectorStore:
             "count": len(self.records),
         }
 
-        faiss.write_index(self.index, str(self.index_path))
         self.meta_path.write_text(
             json.dumps(
                 {
@@ -102,14 +131,14 @@ class ReferenceVectorStore:
         return len(self.records)
 
     def ensure_loaded(self) -> None:
-        """Load existing FAISS index if valid and fresh, else rebuild from templates."""
+        """Load existing FAISS index or numpy vectors if valid and fresh, else rebuild from templates."""
         current_hash = self._compute_templates_hash()
         current_backend = self.embedding_service.backend_name
         current_model = self.embedding_service.model_name
         current_dim = self.embedding_service.embedding_dimension
 
         if (
-            self.index is not None
+            (self.index is not None or self.vectors is not None)
             and self.records
             and self.metadata.get("template_hash") == current_hash
             and self.metadata.get("embedding_backend") == current_backend
@@ -118,7 +147,7 @@ class ReferenceVectorStore:
         ):
             return
 
-        if self.index_path.exists() and self.meta_path.exists():
+        if self.meta_path.exists() and (self.index_path.exists() or self.vectors_path.exists()):
             try:
                 meta = json.loads(self.meta_path.read_text(encoding="utf-8"))
                 matches_meta = (
@@ -129,12 +158,18 @@ class ReferenceVectorStore:
                     and meta.get("template_hash") == current_hash
                 )
                 if matches_meta:
-                    loaded_index = faiss.read_index(str(self.index_path))
-                    if int(loaded_index.d) == current_dim and loaded_index.ntotal == len(meta.get("records", [])):
-                        self.index = loaded_index
-                        self.records = meta.get("records", [])
-                        self.metadata = {k: v for k, v in meta.items() if k != "records"}
-                        return
+                    if self.vectors_path.exists():
+                        self.vectors = np.load(str(self.vectors_path))
+                    self.records = meta.get("records", [])
+                    self.metadata = {k: v for k, v in meta.items() if k != "records"}
+                    if _FAISS_AVAILABLE and faiss is not None and self.index_path.exists():
+                        try:
+                            loaded_index = faiss.read_index(str(self.index_path))
+                            if int(loaded_index.d) == current_dim and loaded_index.ntotal == len(self.records):
+                                self.index = loaded_index
+                        except Exception:
+                            self.index = None
+                    return
             except Exception:
                 pass
 
@@ -150,23 +185,36 @@ class ReferenceVectorStore:
     ) -> list[dict[str, Any]]:
         """Retrieve top-k similar reference clauses with metadata filtering."""
         self.ensure_loaded()
-        if self.index is None or not self.records:
+        if (self.index is None and self.vectors is None) or not self.records:
             return []
 
         query_vec = np.array([self.embedding_service.embed_query(query)], dtype=np.float32)
-        if int(query_vec.shape[1]) != int(self.index.d):
+        dim = int(query_vec.shape[1])
+        index_d = int(self.index.d) if (self.index is not None) else (self.vectors.shape[1] if self.vectors is not None else dim)
+        if dim != index_d:
             self.build_index()
-            if self.index is None or not self.records:
+            if (self.index is None and self.vectors is None) or not self.records:
                 return []
             query_vec = np.array([self.embedding_service.embed_query(query)], dtype=np.float32)
 
-        faiss.normalize_L2(query_vec)
-
         search_k = min(len(self.records), max(top_k * 5, 15))
-        scores, indices = self.index.search(query_vec, search_k)
+
+        if self.index is not None and _FAISS_AVAILABLE and faiss is not None:
+            faiss.normalize_L2(query_vec)
+            scores, indices = self.index.search(query_vec, search_k)
+            score_arr = scores[0]
+            idx_arr = indices[0]
+        elif self.vectors is not None and len(self.vectors) > 0:
+            q_norm = query_vec / max(float(np.linalg.norm(query_vec)), 1e-9)
+            raw_scores = np.dot(self.vectors, q_norm[0])
+            sorted_idx = np.argsort(-raw_scores)[:search_k]
+            score_arr = raw_scores[sorted_idx]
+            idx_arr = sorted_idx
+        else:
+            return []
 
         candidates: list[dict[str, Any]] = []
-        for score, idx in zip(scores[0], indices[0]):
+        for score, idx in zip(score_arr, idx_arr):
             if idx < 0 or idx >= len(self.records):
                 continue
             sim = float(score)

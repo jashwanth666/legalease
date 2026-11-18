@@ -543,7 +543,8 @@ def inject_custom_css() -> None:
 def get_api_client() -> LegalEaseAPIClient:
     """Return an API client instance initialized from session state or default."""
     base_url = st.session_state.get("api_base_url")
-    return LegalEaseAPIClient(base_url=base_url)
+    token = st.session_state.get("auth_token")
+    return LegalEaseAPIClient(base_url=base_url, token=token)
 
 
 def render_page_header(
@@ -706,17 +707,31 @@ def render_sidebar_context(client: LegalEaseAPIClient) -> tuple[dict | None, lis
             st.caption("No contracts uploaded yet. Visit Upload Contract to begin.")
 
         # 4. Enterprise User Profile Section at Bottom
+        user = st.session_state.get("user") or {}
+        user_name = user.get("full_name", "Enterprise User")
+        user_role = user.get("role", "Legal Counsel").replace("_", " ").title()
+        user_tenant = user.get("tenant_id", "Default Org")
+        parts = [p for p in user_name.split() if p]
+        initials = "".join(p[0].upper() for p in parts[:2]) if parts else "EU"
+
         st.markdown(
-            """
+            f"""
             <div class="le-sidebar-user">
-                <div class="le-user-avatar">JR</div>
+                <div class="le-user-avatar">{initials}</div>
                 <div class="le-user-info">
-                    <div class="le-user-name">Jashwanth R</div>
-                    <div class="le-user-role">Legal Counsel • Enterprise</div>
+                    <div class="le-user-name">{user_name}</div>
+                    <div class="le-user-role">{user_role} • {user_tenant}</div>
                 </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
+
+        if st.session_state.get("auth_token"):
+            if st.button("Log Out", key="sidebar_logout_btn", use_container_width=True):
+                st.session_state.pop("auth_token", None)
+                st.session_state.pop("user", None)
+                st.session_state.pop("selected_document_id", None)
+                st.rerun()
 
     return health_data, docs, selected_id

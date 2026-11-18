@@ -8,8 +8,9 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
 from backend.agents.extraction_agent import ExtractionAgent
+from backend.auth.deps import get_current_user
 from backend.config import Settings, get_settings
-from backend.database import Document, get_db
+from backend.database import Document, User, get_db
 from backend.guardrails.document_guard import (
     DocumentValidationError,
     resolve_contained_path,
@@ -52,7 +53,7 @@ async def _read_upload_in_chunks(
         if total_size > max_size_bytes:
             max_mb = max_size_bytes // (1024 * 1024)
             raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                status_code=getattr(status, "HTTP_413_CONTENT_TOO_LARGE", 413),
                 detail=f"File exceeds the maximum allowed upload size of {max_mb} MB.",
             )
         chunks.append(chunk)
@@ -66,7 +67,7 @@ async def _read_upload_in_chunks(
 )
 async def upload_contract(
     file: UploadFile = File(...),
-    tenant_id: str = "default_tenant",
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
@@ -90,8 +91,10 @@ async def upload_contract(
     except DocumentValidationError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
+    tenant_id = current_user.tenant_id
     document_id = _generate_document_id()
     stored_filename = f"{document_id}{validated.extension}"
+    
     if tenant_id and tenant_id != "default_tenant":
         tenant_upload_dir = settings.upload_dir / tenant_id
         tenant_upload_dir.mkdir(parents=True, exist_ok=True)
@@ -128,12 +131,16 @@ async def upload_contract(
 
     db_doc = Document(
         tenant_id=tenant_id,
+        owner_id=current_user.id,
         document_id=document_id,
         filename=validated.safe_filename,
         stored_filename=stored_filename,
         file_type=validated.file_type,
         file_size=validated.file_size,
         processing_status=processing_status,
+        current_stage=processing_status,
+        completed_stages_json="[]",
+        progress_percent=0,
         page_count=page_count,
         ocr_required=ocr_required,
     )
@@ -142,8 +149,10 @@ async def upload_contract(
     db.refresh(db_doc)
 
     logger.info(
-        "Uploaded document_id=%s file_type=%s pages=%s ocr_required=%s",
+        "Uploaded document_id=%s tenant=%s user=%s file_type=%s pages=%s ocr_required=%s",
         document_id,
+        tenant_id,
+        current_user.email,
         validated.file_type,
         page_count,
         ocr_required,
@@ -170,20 +179,36 @@ async def upload_contract(
 
 
 @router.get("/documents", response_model=list[DocumentSummary])
-def list_documents(db: Session = Depends(get_db)):
-    """List all uploaded documents ordered newest first."""
-    docs = db.query(Document).order_by(Document.upload_date.desc()).all()
+def list_documents(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List uploaded documents scoped strictly to the authenticated user's tenant."""
+    query = db.query(Document).filter(Document.tenant_id == current_user.tenant_id)
+    if current_user.role == "employee":
+        # Employees view documents they own (or legacy unassigned documents within tenant)
+        query = query.filter((Document.owner_id == current_user.id) | (Document.owner_id.is_(None)))
+    
+    docs = query.order_by(Document.upload_date.desc()).all()
     return [DocumentSummary.model_validate(doc) for doc in docs]
 
 
 @router.get("/documents/{document_id}", response_model=DocumentDetailResponse)
 def get_document(
     document_id: str,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
-    """Return metadata and extracted page text for a specific document."""
-    doc = db.query(Document).filter(Document.document_id == document_id).first()
+    """Return metadata and extracted page text for a specific document with tenant isolation."""
+    query = db.query(Document).filter(
+        Document.document_id == document_id,
+        Document.tenant_id == current_user.tenant_id,
+    )
+    if current_user.role == "employee":
+        query = query.filter((Document.owner_id == current_user.id) | (Document.owner_id.is_(None)))
+
+    doc = query.first()
     if not doc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -200,15 +225,28 @@ def get_document(
 @router.delete("/documents/{document_id}", response_model=DeleteDocumentResponse)
 def delete_document(
     document_id: str,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
-    """Delete a document record along with uploaded, extracted, and report files."""
-    doc = db.query(Document).filter(Document.document_id == document_id).first()
+    """Delete a document record along with uploaded, extracted, and report files with role enforcement."""
+    doc = db.query(Document).filter(
+        Document.document_id == document_id,
+        Document.tenant_id == current_user.tenant_id,
+    ).first()
     if not doc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Document '{document_id}' not found.",
+        )
+
+    # Role-based deletion authorization:
+    # Admin: can delete any document in their tenant.
+    # Employee / Legal Reviewer: can only delete documents they personally created.
+    if current_user.role != "admin" and doc.owner_id is not None and doc.owner_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to delete this document. Only the document owner or an organization administrator can delete it.",
         )
 
     tenant_id = doc.tenant_id or "default_tenant"
@@ -229,7 +267,7 @@ def delete_document(
     db.delete(doc)
     db.commit()
 
-    logger.info("Deleted document_id=%s and associated files", document_id)
+    logger.info("Deleted document_id=%s by user=%s (role=%s)", document_id, current_user.email, current_user.role)
     return DeleteDocumentResponse(
         document_id=document_id,
         deleted=True,

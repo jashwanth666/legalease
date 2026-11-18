@@ -5,8 +5,9 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from backend.auth.deps import get_current_user, require_roles
 from backend.config import Settings, get_settings
-from backend.database import Clause, Comparison, Document, get_db
+from backend.database import Clause, Comparison, Document, User, get_db
 from backend.ingestion.template_loader import ILLUSTRATIVE_DEFAULT_NOTICE
 from backend.retrieval.embeddings import EmbeddingService
 from backend.retrieval.retriever import TemplateRetriever
@@ -16,9 +17,16 @@ router = APIRouter(prefix="/api", tags=["Comparison"])
 
 
 @router.get("/compare/{document_id}")
-def get_comparisons(document_id: str, db: Session = Depends(get_db)):
-    """Return side-by-side uploaded clauses vs retrieved illustrative reference templates."""
-    doc = db.query(Document).filter(Document.document_id == document_id).first()
+def get_comparisons(
+    document_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return side-by-side uploaded clauses vs retrieved illustrative reference templates with tenant verification."""
+    doc = db.query(Document).filter(
+        Document.document_id == document_id,
+        Document.tenant_id == current_user.tenant_id,
+    ).first()
     if not doc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -85,8 +93,11 @@ def get_comparisons(document_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/templates/rebuild")
-def rebuild_reference_index(settings: Settings = Depends(get_settings)):
-    """Rebuild the FAISS reference template vector store."""
+def rebuild_reference_index(
+    current_user: User = Depends(require_roles("admin")),
+    settings: Settings = Depends(get_settings),
+):
+    """Rebuild the FAISS reference template vector store (Admin privilege required)."""
     retriever = TemplateRetriever(
         vectorstore_dir=settings.vectorstore_dir,
         templates_dir=settings.reference_templates_dir,

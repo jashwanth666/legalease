@@ -101,12 +101,13 @@ def render_side_by_side_comparison(comp: dict, idx: int) -> None:
     sim_txt = f"{sim:.2f}" if isinstance(sim, (int, float)) else "N/A"
 
     is_insufficient = comp.get("insufficient_evidence", False)
-    if is_insufficient:
-        badge_html = '<span style="background:#FFFBEB; color:#92400E; border:1px solid #FDE68A; padding:0.2rem 0.6rem; border-radius:999px; font-size:0.74rem; font-weight:700;">⚠️ Insufficient Evidence</span>'
+    v_notes = comp.get("verification_notes")
+    if is_insufficient or (not comp.get("verified", True) and not v_notes):
+        badge_html = '<span style="background:#FEF2F2; color:#991B1B; border:1px solid #FECACA; padding:0.2rem 0.6rem; border-radius:999px; font-size:0.74rem; font-weight:700;">⚠️ Insufficient Evidence</span>'
     elif comp.get("verified", True):
-        badge_html = '<span style="background:#ECFDF5; color:#065F46; border:1px solid #A7F3D0; padding:0.2rem 0.6rem; border-radius:999px; font-size:0.74rem; font-weight:700;">✓ Verified Benchmark</span>'
+        badge_html = '<span style="background:#ECFDF5; color:#065F46; border:1px solid #A7F3D0; padding:0.2rem 0.6rem; border-radius:999px; font-size:0.74rem; font-weight:700;">🟢 Verified Grounded</span>'
     else:
-        badge_html = '<span style="background:#FEF2F2; color:#991B1B; border:1px solid #FECACA; padding:0.2rem 0.6rem; border-radius:999px; font-size:0.74rem; font-weight:700;">⚠️ Unverified</span>'
+        badge_html = f'<span style="background:#FFFBEB; color:#92400E; border:1px solid #FDE68A; padding:0.2rem 0.6rem; border-radius:999px; font-size:0.74rem; font-weight:700;" title="{html.escape(v_notes or "")}">🟡 Unverified Citation</span>'
 
     st.markdown(
         f"""

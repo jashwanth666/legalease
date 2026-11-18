@@ -11,6 +11,7 @@ from backend.config import Settings, get_settings
 from backend.database.db import configure_database
 from backend.main import create_app
 from backend.schemas.metadata import ContractMetadata, MetadataItem
+from tests.conftest import create_test_user
 
 SAMPLE_DIR = Path(__file__).resolve().parent.parent / "data" / "sample_contracts"
 
@@ -54,7 +55,9 @@ def test_client(tmp_path: Path):
     configure_database(settings.database_url)
     app = create_app()
     app.dependency_overrides[get_settings] = lambda: settings
+    _, token = create_test_user(secret_key=settings.jwt_secret_key)
     with TestClient(app) as client:
+        client.headers["Authorization"] = f"Bearer {token}"
         yield client, settings
     app.dependency_overrides.clear()
 

@@ -163,7 +163,13 @@ with tab_rag:
         unsafe_allow_html=True,
     )
 
-    if st.button("🔄 Rebuild FAISS Reference Index Now", type="primary"):
+    user = st.session_state.get("user") or {}
+    user_role = user.get("role", "employee")
+    is_admin = user_role == "admin"
+
+    if not is_admin:
+        st.info("ℹ️ Rebuilding reference templates requires the `admin` role. Your current role is: `" + user_role + "`.")
+    if st.button("🔄 Rebuild FAISS Reference Index Now", type="primary", disabled=not is_admin):
         with st.spinner("Extracting template clauses and building FAISS vector index..."):
             try:
                 res = client.rebuild_templates()
@@ -195,8 +201,39 @@ with tab_sec:
         unsafe_allow_html=True,
     )
 
+    curr_user = st.session_state.get("user") or {}
+    if curr_user:
+        st.markdown(
+            f"""
+            <div class="le-card" style="border-left:4px solid #356AE6; background:#F8FAFC; margin-bottom:1rem;">
+                <div style="font-size:0.75rem; font-weight:700; text-transform:uppercase; color:#356AE6; margin-bottom:0.25rem;">
+                    Active Session & Tenant Authorization
+                </div>
+                <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:0.5rem; font-size:0.82rem; color:#172033; margin-top:0.5rem;">
+                    <div>User: <strong>{html.escape(curr_user.get('full_name', 'N/A'))}</strong></div>
+                    <div>Email: <strong>{html.escape(curr_user.get('email', 'N/A'))}</strong></div>
+                    <div>Role: <code>{html.escape(curr_user.get('role', 'N/A'))}</code></div>
+                    <div>Tenant / Org ID: <code>{html.escape(curr_user.get('tenant_id', 'default_tenant'))}</code></div>
+                    <div>Session Token: <span style="color:#16A36A; font-weight:600;">RFC 7519 HS256 Verified</span></div>
+                    <div>Isolation: <span style="color:#16A36A; font-weight:600;">Strict Tenant Boundary</span></div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
     st.markdown(
         """
+        <div class="le-card" style="margin-bottom:0.85rem;">
+            <div style="font-size:0.9rem; font-weight:700; color:#101B35; margin-bottom:0.35rem;">
+                🏢 Strict Multi-Tenant Data Isolation
+            </div>
+            <div style="font-size:0.82rem; color:#748094; line-height:1.55;">
+                Every document, clause, analysis payload, and report is strictly scoped to the tenant ID embedded
+                within the authenticated JWT token. Cross-tenant access is blocked at the database and filesystem levels.
+            </div>
+        </div>
+
         <div class="le-card" style="margin-bottom:0.85rem;">
             <div style="font-size:0.9rem; font-weight:700; color:#101B35; margin-bottom:0.35rem;">
                 🛡️ Upload Validation & DoS Hardening

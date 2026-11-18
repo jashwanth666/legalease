@@ -170,6 +170,7 @@ def generate_analysis_pdf(
     risk_results: list[dict[str, Any]],
     comparisons: list[dict[str, Any]],
     missing_clauses: dict[str, Any],
+    verification_summary: dict[str, Any] | None = None,
 ) -> Path:
     """Build a structured, multi-section LegalEase PDF report using ReportLab."""
     # Defensive normalisation — guard against None or wrong types from callers
@@ -221,6 +222,15 @@ def generate_analysis_pdf(
         textColor=NAVY,
         spaceBefore=12,
         spaceAfter=6,
+    )
+    sub_section_style = ParagraphStyle(
+        "LegalSubSection",
+        parent=styles["Heading3"],
+        fontName=BOLD_FONT,
+        fontSize=10.5,
+        textColor=NAVY,
+        spaceBefore=8,
+        spaceAfter=4,
     )
     body_style = ParagraphStyle(
         "LegalBody",
@@ -365,6 +375,41 @@ def generate_analysis_pdf(
             small_style,
         )
     )
+
+    # Evidence Verification Summary
+    if verification_summary and isinstance(verification_summary, dict):
+        all_ver = bool(verification_summary.get("all_verified", False))
+        ver_status = "All Cited Evidence Verified" if all_ver else "Evidence Verification Warnings Detected"
+        story.append(Spacer(1, 4))
+        story.append(Paragraph(f"Evidence Verification ({ver_status})", sub_section_style))
+
+        r_info = verification_summary.get("risks", {})
+        c_info = verification_summary.get("comparisons", {})
+        m_info = verification_summary.get("metadata", {})
+        ms_info = verification_summary.get("missing_clauses", {})
+
+        ver_rows = [
+            ["Verification Category", "Total Items", "Verified Grounded", "Status"],
+            ["Risk Findings", str(r_info.get("total", len(risk_results))), str(r_info.get("verified", 0)), "Verified" if r_info.get("unverified", 0) == 0 else f"{r_info.get('unverified', 0)} Unverified"],
+            ["Reference Comparisons", str(c_info.get("total", len(comparisons))), str(c_info.get("verified", 0)), "Verified" if c_info.get("unverified", 0) == 0 else f"{c_info.get('unverified', 0)} Unverified"],
+            ["Contract Metadata Fields", str(m_info.get("total", 0)), str(m_info.get("verified", 0)), "Verified" if m_info.get("unverified", 0) == 0 else f"{m_info.get('unverified', 0)} Unverified"],
+            ["Missing Clause Checklist", str(ms_info.get("total", 0)), str(ms_info.get("verified", 0)), "Verified" if ms_info.get("unverified", 0) == 0 else f"{ms_info.get('unverified', 0)} Unverified"],
+        ]
+        ver_table = Table(ver_rows, colWidths=[2.4 * inch, 1.4 * inch, 1.8 * inch, 1.4 * inch])
+        ver_table.setStyle(
+            TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), BOLD_FONT),
+                ("FONTNAME", (0, 1), (-1, -1), BODY_FONT),
+                ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+                ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+                ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
+                ("PADDING", (0, 0), (-1, -1), 4),
+            ])
+        )
+        story.append(ver_table)
+        story.append(Spacer(1, 4))
 
     # 5. Executive Summary
     story.append(Paragraph("3. Executive Summary", section_style))
