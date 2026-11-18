@@ -89,14 +89,20 @@ class Settings(BaseSettings):
                     )
             if self.redis_url:
                 try:
-                    import redis as redis_lib
+                    import importlib
 
+                    redis_lib = importlib.import_module("redis")
                     client = redis_lib.from_url(
                         self.redis_url,
                         socket_connect_timeout=2,
                         socket_timeout=2,
                     )
                     client.ping()
+                except ModuleNotFoundError:
+                    raise RuntimeError(
+                        "CRITICAL SECURITY CONFIGURATION ERROR: Running in production with REDIS_URL configured, "
+                        "but the 'redis' Python package is not installed. Install dependencies with: pip install redis>=5.0.0"
+                    )
                 except Exception as exc:
                     raise RuntimeError(
                         f"CRITICAL SECURITY CONFIGURATION ERROR: Running in production with REDIS_URL configured, "

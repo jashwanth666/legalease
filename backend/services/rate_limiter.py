@@ -277,7 +277,9 @@ def get_rate_limiter(
 
     if redis_url:
         try:
-            import redis as redis_lib  # type: ignore[import]
+            import importlib
+
+            redis_lib = importlib.import_module("redis")
 
             client = redis_lib.from_url(
                 redis_url,
