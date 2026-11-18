@@ -80,6 +80,12 @@ with sc1:
                 st.success(f"Loaded sample NDA as `{resp['document_id']}`. Ready for analysis!")
                 st.rerun()
             except APIError as exc:
+                if exc.status_code == 401 or "does not exist" in str(exc.message).lower():
+                    st.session_state.pop("auth_token", None)
+                    st.session_state.pop("user", None)
+                    st.session_state.pop("selected_document_id", None)
+                    client.set_token(None)
+                    st.rerun()
                 st.error(exc.message)
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -115,6 +121,12 @@ with sc2:
                 st.success(f"Loaded Master Services Agreement as `{resp['document_id']}`. Ready for analysis!")
                 st.rerun()
             except APIError as exc:
+                if exc.status_code == 401 or "does not exist" in str(exc.message).lower():
+                    st.session_state.pop("auth_token", None)
+                    st.session_state.pop("user", None)
+                    st.session_state.pop("selected_document_id", None)
+                    client.set_token(None)
+                    st.rerun()
                 st.error(exc.message)
     st.markdown("</div>", unsafe_allow_html=True)
 

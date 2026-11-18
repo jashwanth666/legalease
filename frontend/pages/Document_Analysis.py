@@ -13,6 +13,12 @@ from frontend.components.sidebar import (
 from frontend.utils.api_client import APIError
 
 
+def _clean_html(raw_html: str) -> str:
+    """Strip leading whitespace on each line so Markdown parser never renders HTML as an indented code block."""
+    lines = [line.strip() for line in raw_html.splitlines() if line.strip()]
+    return "\n".join(lines)
+
+
 client = get_api_client()
 health, docs, selected_id = render_sidebar_context(client)
 
@@ -29,15 +35,17 @@ if health is None:
 
 if not selected_id:
     st.markdown(
-        """
-        <div class="le-card" style="text-align:center; padding:2rem;">
-            <div style="font-size:2rem; margin-bottom:0.5rem;">📄</div>
-            <div style="font-size:1.1rem; font-weight:700; color:#101B35;">No Contract Selected</div>
-            <div style="font-size:0.84rem; color:#748094; max-width:400px; margin:0.25rem auto 1rem auto;">
-                Please select a contract from the sidebar or upload a new agreement.
+        _clean_html(
+            """
+            <div class="le-card" style="text-align:center; padding:2rem;">
+                <div style="font-size:2rem; margin-bottom:0.5rem;">📄</div>
+                <div style="font-size:1.1rem; font-weight:700; color:#101B35;">No Contract Selected</div>
+                <div style="font-size:0.84rem; color:#748094; max-width:400px; margin:0.25rem auto 1rem auto;">
+                    Please select a contract from the sidebar or upload a new agreement.
+                </div>
             </div>
-        </div>
-        """,
+            """
+        ),
         unsafe_allow_html=True,
     )
     if st.button("Go to Upload Contract", type="primary"):
@@ -58,31 +66,33 @@ proc_status = doc.get("processing_status", "uploaded")
 status_badge_color = "#16A36A" if proc_status == "analyzed" else ("#DC4545" if proc_status == "failed" else "#356AE6")
 
 st.markdown(
-    f"""
-    <div class="le-card" style="border-top:3px solid {status_badge_color};">
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.75rem;">
-            <div>
-                <span style="font-size:0.75rem; font-weight:700; text-transform:uppercase; color:#748094; letter-spacing:0.05em;">
-                    Contract Overview
-                </span>
-                <div style="font-size:1.2rem; font-weight:800; color:#101B35;">
-                    {html.escape(doc['filename'])}
+    _clean_html(
+        f"""
+        <div class="le-card" style="border-top:3px solid {status_badge_color};">
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.75rem;">
+                <div>
+                    <span style="font-size:0.75rem; font-weight:700; text-transform:uppercase; color:#748094; letter-spacing:0.05em;">
+                        Contract Overview
+                    </span>
+                    <div style="font-size:1.2rem; font-weight:800; color:#101B35;">
+                        {html.escape(doc['filename'])}
+                    </div>
+                </div>
+                <div style="display:flex; align-items:center; gap:0.5rem;">
+                    <span style="background:{status_badge_color}15; color:{status_badge_color}; border:1px solid {status_badge_color}40; padding:0.25rem 0.65rem; border-radius:999px; font-size:0.75rem; font-weight:700; text-transform:uppercase;">
+                        {html.escape(proc_status)}
+                    </span>
                 </div>
             </div>
-            <div style="display:flex; align-items:center; gap:0.5rem;">
-                <span style="background:{status_badge_color}15; color:{status_badge_color}; border:1px solid {status_badge_color}40; padding:0.25rem 0.65rem; border-radius:999px; font-size:0.75rem; font-weight:700; text-transform:uppercase;">
-                    {html.escape(proc_status)}
-                </span>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:0.75rem; font-size:0.82rem; color:#748094; padding-top:0.5rem; border-top:1px solid #F1F4F9;">
+                <div>Contract ID: <strong style="color:#101B35;">{html.escape(doc['document_id'])}</strong></div>
+                <div>File Format: <strong style="color:#101B35;">{html.escape(doc['file_type'].upper())}</strong></div>
+                <div>Pagination: <strong style="color:#101B35;">{doc.get('page_count', 0) if doc['file_type'] == 'pdf' else 'DOCX Paras'}</strong></div>
+                <div>Analysis Mode: <strong style="color:#101B35;">{html.escape(doc.get('analysis_mode') or 'Pending')}</strong></div>
             </div>
         </div>
-        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:0.75rem; font-size:0.82rem; color:#748094; padding-top:0.5rem; border-top:1px solid #F1F4F9;">
-            <div>Contract ID: <strong style="color:#101B35;">{html.escape(doc['document_id'])}</strong></div>
-            <div>File Format: <strong style="color:#101B35;">{html.escape(doc['file_type'].upper())}</strong></div>
-            <div>Pagination: <strong style="color:#101B35;">{doc.get('page_count', 0) if doc['file_type'] == 'pdf' else 'DOCX Paras'}</strong></div>
-            <div>Analysis Mode: <strong style="color:#101B35;">{html.escape(doc.get('analysis_mode') or 'Pending')}</strong></div>
-        </div>
-    </div>
-    """,
+        """
+    ),
     unsafe_allow_html=True,
 )
 
@@ -100,21 +110,26 @@ if proc_status in ("queued", "processing"):
         pending_stages = status_info.get("pending_stages", [])
 
         st.markdown(
-            f"""
-            <div class="le-card" style="border-left: 4px solid #356AE6; background:#F8FAFC; padding:1.25rem; margin-bottom:1.25rem;">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.6rem; flex-wrap:wrap; gap:0.5rem;">
-                    <div>
-                        <span style="font-size:0.75rem; font-weight:700; text-transform:uppercase; color:#356AE6; letter-spacing:0.06em;">
-                            ⚡ Background Analysis Running
-                        </span>
-                        <div style="font-size:1.15rem; font-weight:800; color:#101B35;">
-                            {html.escape(stage_label)}
+            _clean_html(
+                f"""
+                <div class="le-card" style="border-left: 4px solid #356AE6; background:#F8FAFC; padding:1.25rem; margin-bottom:1.25rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.6rem; flex-wrap:wrap; gap:0.5rem;">
+                        <div>
+                            <span style="font-size:0.75rem; font-weight:700; text-transform:uppercase; color:#356AE6; letter-spacing:0.06em;">
+                                ⚡ Background Analysis Running
+                            </span>
+                            <div style="font-size:1.15rem; font-weight:800; color:#101B35;">
+                                {html.escape(stage_label)}
+                            </div>
+                        </div>
+                        <div style="font-size:1.3rem; font-weight:800; color:#356AE6;">
+                            {progress_pct}%
                         </div>
                     </div>
-                    <div style="font-size:1.3rem; font-weight:800; color:#356AE6;">
-                        {progress_pct}%
-                    </div>
-                </div>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
             </div>
             """,
             unsafe_allow_html=True,
@@ -194,44 +209,50 @@ with tab_summary:
                 ver_rate = v_sum.get("verification_rate_percent", 0.0)
 
                 st.markdown(
-                    f"""
-                    <div style="background:#FFFFFF; border:1px solid #E6EAF0; border-radius:10px; padding:0.9rem 1.15rem; margin-bottom:1rem; box-shadow:0 1px 3px rgba(16,27,53,0.04);">
-                        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.5rem;">
-                            <span style="font-size:0.78rem; font-weight:700; text-transform:uppercase; color:#101B35; letter-spacing:0.04em;">
-                                🛡️ Grounded Evidence Verification Summary
-                            </span>
-                            <span style="font-size:0.82rem; font-weight:700; color:{'#16A36A' if ver_rate >= 75 else '#D97706'};">
-                                {ver_rate:.1f}% Citations Grounded & Verified
-                            </span>
+                    _clean_html(
+                        f"""
+                        <div style="background:#FFFFFF; border:1px solid #E6EAF0; border-radius:10px; padding:0.9rem 1.15rem; margin-bottom:1rem; box-shadow:0 1px 3px rgba(16,27,53,0.04);">
+                            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.5rem;">
+                                <span style="font-size:0.78rem; font-weight:700; text-transform:uppercase; color:#101B35; letter-spacing:0.04em;">
+                                    🛡️ Grounded Evidence Verification Summary
+                                </span>
+                                <span style="font-size:0.82rem; font-weight:700; color:{'#16A36A' if ver_rate >= 75 else '#D97706'};">
+                                    {ver_rate:.1f}% Citations Grounded & Verified
+                                </span>
+                            </div>
+                            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); gap:0.5rem; font-size:0.78rem; color:#748094;">
+                                <div>Total Audited: <strong style="color:#101B35;">{tot_aud}</strong></div>
+                                <div>Grounded / Verified: <strong style="color:#16A36A;">{ver_count}</strong></div>
+                                <div>Review Required: <strong style="color:#DC4545;">{unver_count}</strong></div>
+                                <div>Metadata Verified: <strong style="color:#101B35;">{v_sum.get('metadata_verified', 0)}/{v_sum.get('metadata_verified', 0) + v_sum.get('metadata_unverified', 0)}</strong></div>
+                                <div>Risks Verified: <strong style="color:#101B35;">{v_sum.get('risks_verified', 0)}/{v_sum.get('risks_verified', 0) + v_sum.get('risks_unverified', 0)}</strong></div>
+                            </div>
                         </div>
-                        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); gap:0.5rem; font-size:0.78rem; color:#748094;">
-                            <div>Total Audited: <strong style="color:#101B35;">{tot_aud}</strong></div>
-                            <div>Grounded / Verified: <strong style="color:#16A36A;">{ver_count}</strong></div>
-                            <div>Review Required: <strong style="color:#DC4545;">{unver_count}</strong></div>
-                            <div>Metadata Verified: <strong style="color:#101B35;">{v_sum.get('metadata_verified', 0)}/{v_sum.get('metadata_verified', 0) + v_sum.get('metadata_unverified', 0)}</strong></div>
-                            <div>Risks Verified: <strong style="color:#101B35;">{v_sum.get('risks_verified', 0)}/{v_sum.get('risks_verified', 0) + v_sum.get('risks_unverified', 0)}</strong></div>
-                        </div>
-                    </div>
-                    """,
+                        """
+                    ),
                     unsafe_allow_html=True,
                 )
 
             st.markdown(
-                f"""
-                <div style="background:#F8FAFC; border:1px solid #E6EAF0; border-radius:10px; padding:0.75rem 1rem; margin-bottom:1rem; font-size:0.8rem; color:#748094; display:flex; justify-content:space-between; flex-wrap:wrap; gap:0.5rem;">
-                    <div>Contract Classification: <strong style="color:#101B35;">{html.escape(analysis.get('detected_contract_type', 'General Agreement'))}</strong></div>
-                    <div>Embedding Provider: <code>{html.escape(analysis.get('embedding_backend', 'N/A'))}</code></div>
-                </div>
-                """,
+                _clean_html(
+                    f"""
+                    <div style="background:#F8FAFC; border:1px solid #E6EAF0; border-radius:10px; padding:0.75rem 1rem; margin-bottom:1rem; font-size:0.8rem; color:#748094; display:flex; justify-content:space-between; flex-wrap:wrap; gap:0.5rem;">
+                        <div>Contract Classification: <strong style="color:#101B35;">{html.escape(analysis.get('detected_contract_type', 'General Agreement'))}</strong></div>
+                        <div>Embedding Provider: <code>{html.escape(analysis.get('embedding_backend', 'N/A'))}</code></div>
+                    </div>
+                    """
+                ),
                 unsafe_allow_html=True,
             )
 
             st.markdown(
-                f"""
-                <div class="le-card" style="line-height:1.65; color:#172033; font-size:0.92rem;">
-                    {analysis.get('executive_summary', 'No executive summary available.')}
-                </div>
-                """,
+                _clean_html(
+                    f"""
+                    <div class="le-card" style="line-height:1.65; color:#172033; font-size:0.92rem;">
+                        {analysis.get('executive_summary', 'No executive summary available.')}
+                    </div>
+                    """
+                ),
                 unsafe_allow_html=True,
             )
         except APIError as exc:
@@ -252,7 +273,20 @@ with tab_metadata:
                 source_badge = "🤖 Gemini AI Extraction" if source == "gemini" else "⚙️ Deterministic Heuristic Extraction"
 
                 st.markdown(
-                    f"""
+                    _clean_html(
+                        f"""
+                        <div style="background:#F8FAFC; border:1px solid #E6EAF0; border-radius:10px; padding:0.75rem 1rem; margin-bottom:1.25rem; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
+                            <div style="font-size:0.85rem; color:#475569;">
+                                Extraction Engine: <strong style="color:#101B35;">{html.escape(source_badge)}</strong>
+                            </div>
+                            <div style="font-size:0.85rem; color:#475569;">
+                                Completeness Score: <strong style="color:#0EA5E9;">{int(completeness * 100)}%</strong>
+                            </div>
+                        </div>
+                        """
+                    ),
+                    unsafe_allow_html=True,
+                )
                     <div style="background:#F8FAFC; border:1px solid #E6EAF0; border-radius:10px; padding:0.75rem 1rem; margin-bottom:1.25rem; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.75rem;">
                         <div style="font-size:0.85rem; color:#475569;">
                             Extraction Engine: <strong style="color:#101B35;">{html.escape(source_badge)}</strong>

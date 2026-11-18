@@ -6,6 +6,7 @@ import streamlit as st
 
 from frontend.components.risk_cards import (
     RISK_COLORS,
+    clean_html,
     render_kpi_card,
     render_risk_finding_card,
     render_risk_score_gauge,
@@ -35,15 +36,17 @@ if health is None:
 
 if not selected_id:
     st.markdown(
-        """
-        <div class="le-card" style="text-align:center; padding:2rem;">
-            <div style="font-size:2rem; margin-bottom:0.5rem;">🛡️</div>
-            <div style="font-size:1.1rem; font-weight:700; color:#101B35;">No Contract Selected</div>
-            <div style="font-size:0.84rem; color:#748094; max-width:400px; margin:0.25rem auto 1rem auto;">
-                Please select an active contract from the sidebar to inspect its risk profile.
+        clean_html(
+            """
+            <div class="le-card" style="text-align:center; padding:2rem;">
+                <div style="font-size:2rem; margin-bottom:0.5rem;">🛡️</div>
+                <div style="font-size:1.1rem; font-weight:700; color:#101B35;">No Contract Selected</div>
+                <div style="font-size:0.84rem; color:#748094; max-width:400px; margin:0.25rem auto 1rem auto;">
+                    Please select an active contract from the sidebar to inspect its risk profile.
+                </div>
             </div>
-        </div>
-        """,
+            """
+        ),
         unsafe_allow_html=True,
     )
     st.stop()
@@ -63,13 +66,15 @@ overall_level = str(analysis.get("overall_risk_level", "no_notable_risk")).lower
 # Fallback Transparency Alert
 if analysis.get("fallback_used"):
     st.markdown(
-        f"""
-        <div style="background:#FFFBEB; border:1px solid #FDE68A; border-left:4px solid #E69A32; border-radius:8px; padding:0.75rem 1rem; margin-bottom:1.25rem; font-size:0.83rem; color:#92400E;">
-            <strong>Deterministic Screening Active:</strong> Analysis executed in <code>{analysis.get('analysis_mode')}</code> mode
-            (Gemini status: <code>{analysis.get('gemini_status')}</code> &mdash; {analysis.get('fallback_reason') or 'Heuristic model'}).
-            Findings are generated from local deterministic heuristics, not Google Gemini LLM synthesis.
-        </div>
-        """,
+        clean_html(
+            f"""
+            <div style="background:#FFFBEB; border:1px solid #FDE68A; border-left:4px solid #E69A32; border-radius:8px; padding:0.75rem 1rem; margin-bottom:1.25rem; font-size:0.83rem; color:#92400E;">
+                <strong>Deterministic Screening Active:</strong> Analysis executed in <code>{analysis.get('analysis_mode')}</code> mode
+                (Gemini status: <code>{analysis.get('gemini_status')}</code> &mdash; {analysis.get('fallback_reason') or 'Heuristic model'}).
+                Findings are generated from local deterministic heuristics, not Google Gemini LLM synthesis.
+            </div>
+            """
+        ),
         unsafe_allow_html=True,
     )
 
@@ -102,14 +107,16 @@ st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
 chart_col, info_col = st.columns([3, 2])
 with chart_col:
     st.markdown(
-        """
-        <div class="le-section-header">
-            <div>
-                <h3 class="le-section-title">Risk Severity Breakdown</h3>
-                <p class="le-section-subtitle">Clause breakdown by severity category in this contract</p>
+        clean_html(
+            """
+            <div class="le-section-header">
+                <div>
+                    <h3 class="le-section-title">Risk Severity Breakdown</h3>
+                    <p class="le-section-subtitle">Clause breakdown by severity category in this contract</p>
+                </div>
             </div>
-        </div>
-        """,
+            """
+        ),
         unsafe_allow_html=True,
     )
     chart_df = pd.DataFrame(
@@ -129,14 +136,16 @@ with chart_col:
 
 with info_col:
     st.markdown(
-        """
-        <div class="le-section-header">
-            <div>
-                <h3 class="le-section-title">Review Recommendations</h3>
-                <p class="le-section-subtitle">Priority review steps for counsel</p>
+        clean_html(
+            """
+            <div class="le-section-header">
+                <div>
+                    <h3 class="le-section-title">Review Recommendations</h3>
+                    <p class="le-section-subtitle">Priority review steps for counsel</p>
+                </div>
             </div>
-        </div>
-        """,
+            """
+        ),
         unsafe_allow_html=True,
     )
 
@@ -156,20 +165,22 @@ with info_col:
         desc = "No critical risk deviations detected. Proceed with standard operational clause review."
 
     st.markdown(
-        f"""
-        <div class="le-card" style="border-left:4px solid {badge_color};">
-            <div style="font-size:0.85rem; font-weight:700; color:{badge_color}; margin-bottom:0.35rem;">
-                {badge_text}
+        clean_html(
+            f"""
+            <div class="le-card" style="border-left:4px solid {badge_color};">
+                <div style="font-size:0.85rem; font-weight:700; color:{badge_color}; margin-bottom:0.35rem;">
+                    {badge_text}
+                </div>
+                <div style="font-size:0.82rem; color:#172033; line-height:1.5;">
+                    {desc}
+                </div>
+                <div style="margin-top:0.75rem; font-size:0.75rem; color:#748094;">
+                    Detected Contract Type: <strong>{analysis.get('detected_contract_type', 'General')}</strong> &bull;
+                    Embeddings: <code>{analysis.get('embedding_backend')}</code>
+                </div>
             </div>
-            <div style="font-size:0.82rem; color:#172033; line-height:1.5;">
-                {desc}
-            </div>
-            <div style="margin-top:0.75rem; font-size:0.75rem; color:#748094;">
-                Detected Contract Type: <strong>{analysis.get('detected_contract_type', 'General')}</strong> &bull;
-                Embeddings: <code>{analysis.get('embedding_backend')}</code>
-            </div>
-        </div>
-        """,
+            """
+        ),
         unsafe_allow_html=True,
     )
 
@@ -177,14 +188,16 @@ st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
 
 # 4. Individual Risk Findings List with Category Filter
 st.markdown(
-    """
-    <div class="le-section-header">
-        <div>
-            <h3 class="le-section-title">Itemized Clause Risk Findings</h3>
-            <p class="le-section-subtitle">Specific provisions with detected exposures, explanations, impacts, and remediation actions</p>
+    clean_html(
+        """
+        <div class="le-section-header">
+            <div>
+                <h3 class="le-section-title">Itemized Clause Risk Findings</h3>
+                <p class="le-section-subtitle">Specific provisions with detected exposures, explanations, impacts, and remediation actions</p>
+            </div>
         </div>
-    </div>
-    """,
+        """
+    ),
     unsafe_allow_html=True,
 )
 
@@ -207,11 +220,13 @@ else:
     ]
 
     st.markdown(
-        f"""
-        <div style="font-size:0.8rem; font-weight:600; color:#748094; margin-bottom:1rem;">
-            Showing <strong style="color:#101B35;">{len(filtered_findings)}</strong> of {len(findings)} clause risk assessments
-        </div>
-        """,
+        clean_html(
+            f"""
+            <div style="font-size:0.8rem; font-weight:600; color:#748094; margin-bottom:1rem;">
+                Showing <strong style="color:#101B35;">{len(filtered_findings)}</strong> of {len(findings)} clause risk assessments
+            </div>
+            """
+        ),
         unsafe_allow_html=True,
     )
 

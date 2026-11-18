@@ -3,7 +3,7 @@
 import html
 import streamlit as st
 
-from frontend.components.risk_cards import render_kpi_card
+from frontend.components.risk_cards import clean_html, render_kpi_card
 from frontend.components.sidebar import (
     get_api_client,
     render_disclaimer_footer,
@@ -289,48 +289,50 @@ with tab_sec:
                     st.caption(f"Could not load users: {exc.message}")
 
     st.markdown(
-        """
-        <div class="le-card" style="margin-bottom:0.85rem;">
-            <div style="font-size:0.9rem; font-weight:700; color:#101B35; margin-bottom:0.35rem;">
-                🏢 Strict Multi-Tenant Data Isolation
+        clean_html(
+            """
+            <div class="le-card" style="margin-bottom:0.85rem;">
+                <div style="font-size:0.9rem; font-weight:700; color:#101B35; margin-bottom:0.35rem;">
+                    🏢 Strict Multi-Tenant Data Isolation
+                </div>
+                <div style="font-size:0.82rem; color:#748094; line-height:1.55;">
+                    Every document, clause, analysis payload, and report is strictly scoped to the tenant ID embedded
+                    within the authenticated JWT token. Cross-tenant access is blocked at the database and filesystem levels.
+                </div>
             </div>
-            <div style="font-size:0.82rem; color:#748094; line-height:1.55;">
-                Every document, clause, analysis payload, and report is strictly scoped to the tenant ID embedded
-                within the authenticated JWT token. Cross-tenant access is blocked at the database and filesystem levels.
-            </div>
-        </div>
 
-        <div class="le-card" style="margin-bottom:0.85rem;">
-            <div style="font-size:0.9rem; font-weight:700; color:#101B35; margin-bottom:0.35rem;">
-                🛡️ Upload Validation & DoS Hardening
+            <div class="le-card" style="margin-bottom:0.85rem;">
+                <div style="font-size:0.9rem; font-weight:700; color:#101B35; margin-bottom:0.35rem;">
+                    🛡️ Upload Validation & DoS Hardening
+                </div>
+                <div style="font-size:0.82rem; color:#748094; line-height:1.55;">
+                    Uploads are inspected in streaming chunks, enforcing a strict 15 MB limit before memory allocation.
+                    Magic bytes verification ensures extension spoofing is rejected. Encrypted PDFs and zip-bomb DOCX files are blocked.
+                </div>
             </div>
-            <div style="font-size:0.82rem; color:#748094; line-height:1.55;">
-                Uploads are inspected in streaming chunks, enforcing a strict 15 MB limit before memory allocation.
-                Magic bytes verification ensures extension spoofing is rejected. Encrypted PDFs and zip-bomb DOCX files are blocked.
-            </div>
-        </div>
 
-        <div class="le-card" style="margin-bottom:0.85rem;">
-            <div style="font-size:0.9rem; font-weight:700; color:#101B35; margin-bottom:0.35rem;">
-                🔒 Untrusted Input Isolation & Prompt Safety
+            <div class="le-card" style="margin-bottom:0.85rem;">
+                <div style="font-size:0.9rem; font-weight:700; color:#101B35; margin-bottom:0.35rem;">
+                    🔒 Untrusted Input Isolation & Prompt Safety
+                </div>
+                <div style="font-size:0.82rem; color:#748094; line-height:1.55;">
+                    All contract text is encapsulated within secure XML tags and treated as untrusted user data.
+                    System prompts explicitly forbid contract text from overriding system review policies or security rules.
+                </div>
             </div>
-            <div style="font-size:0.82rem; color:#748094; line-height:1.55;">
-                All contract text is encapsulated within secure XML tags and treated as untrusted user data.
-                System prompts explicitly forbid contract text from overriding system review policies or security rules.
-            </div>
-        </div>
 
-        <div class="le-card" style="margin-bottom:0.85rem;">
-            <div style="font-size:0.9rem; font-weight:700; color:#101B35; margin-bottom:0.35rem;">
-                🗑️ Permanent Data Destruction & Path Containment
+            <div class="le-card" style="margin-bottom:0.85rem;">
+                <div style="font-size:0.9rem; font-weight:700; color:#101B35; margin-bottom:0.35rem;">
+                    🗑️ Permanent Data Destruction & Path Containment
+                </div>
+                <div style="font-size:0.82rem; color:#748094; line-height:1.55;">
+                    Uploaded files and generated reports reside in restricted local directory hierarchies.
+                    Deleting an active contract from the Dashboard completely purges the source document, extracted pages,
+                    clause database rows, and compiled PDF reports.
+                </div>
             </div>
-            <div style="font-size:0.82rem; color:#748094; line-height:1.55;">
-                Uploaded files and generated reports reside in restricted local directory hierarchies.
-                Deleting an active contract from the Dashboard completely purges the source document, extracted pages,
-                clause database rows, and compiled PDF reports.
-            </div>
-        </div>
-        """,
+            """
+        ),
         unsafe_allow_html=True,
     )
 

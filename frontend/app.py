@@ -186,14 +186,15 @@ if not token:
     render_auth_view(client)
     st.stop()
 
-# Ensure token is still valid
+# Ensure token and authenticated user account still exist in backend
 try:
-    if "user" not in st.session_state:
-        st.session_state["user"] = client.get_me()
+    st.session_state["user"] = client.get_me()
 except APIError as exc:
-    # Token expired or invalid
+    # Token expired, invalid, or user account deleted from database
     st.session_state.pop("auth_token", None)
     st.session_state.pop("user", None)
+    st.session_state.pop("selected_document_id", None)
+    client.set_token(None)
     render_auth_view(client)
     st.stop()
 

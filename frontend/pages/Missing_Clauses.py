@@ -4,7 +4,7 @@ import html
 import pandas as pd
 import streamlit as st
 
-from frontend.components.risk_cards import render_kpi_card
+from frontend.components.risk_cards import clean_html, render_kpi_card
 from frontend.components.sidebar import (
     get_api_client,
     render_disclaimer_footer,
@@ -30,15 +30,17 @@ if health is None:
 
 if not selected_id:
     st.markdown(
-        """
-        <div class="le-card" style="text-align:center; padding:2rem;">
-            <div style="font-size:2rem; margin-bottom:0.5rem;">🧩</div>
-            <div style="font-size:1.1rem; font-weight:700; color:#101B35;">No Contract Selected</div>
-            <div style="font-size:0.84rem; color:#748094; max-width:400px; margin:0.25rem auto 1rem auto;">
-                Please select an active contract from the sidebar to inspect standard checklist coverage.
+        clean_html(
+            """
+            <div class="le-card" style="text-align:center; padding:2rem;">
+                <div style="font-size:2rem; margin-bottom:0.5rem;">🧩</div>
+                <div style="font-size:1.1rem; font-weight:700; color:#101B35;">No Contract Selected</div>
+                <div style="font-size:0.84rem; color:#748094; max-width:400px; margin:0.25rem auto 1rem auto;">
+                    Please select an active contract from the sidebar to inspect standard checklist coverage.
+                </div>
             </div>
-        </div>
-        """,
+            """
+        ),
         unsafe_allow_html=True,
     )
     st.stop()
@@ -60,13 +62,15 @@ uncertain = missing.get("uncertain_clauses", [])
 
 # Checklist Methodology Notice
 st.markdown(
-    """
-    <div style="background:#F8FAFC; border:1px solid #E6EAF0; border-left:4px solid #356AE6; border-radius:8px; padding:0.75rem 1rem; margin-bottom:1.25rem; font-size:0.82rem; color:#748094;">
-        <strong style="color:#101B35;">Standard Checklist Guidance:</strong>
-        A clause category marked as "Not Detected" indicates it was not identified during segmentation and classification.
-        Whether the clause is legally mandatory depends on transaction structure, commercial leverage, and governing jurisdiction.
-    </div>
-    """,
+    clean_html(
+        """
+        <div style="background:#F8FAFC; border:1px solid #E6EAF0; border-left:4px solid #356AE6; border-radius:8px; padding:0.75rem 1rem; margin-bottom:1.25rem; font-size:0.82rem; color:#748094;">
+            <strong style="color:#101B35;">Standard Checklist Guidance:</strong>
+            A clause category marked as "Not Detected" indicates it was not identified during segmentation and classification.
+            Whether the clause is legally mandatory depends on transaction structure, commercial leverage, and governing jurisdiction.
+        </div>
+        """
+    ),
     unsafe_allow_html=True,
 )
 
@@ -105,30 +109,34 @@ st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
 
 # Visual Progress Bar
 st.markdown(
-    f"""
-    <div style="background:#FFFFFF; border:1px solid #E6EAF0; border-radius:12px; padding:1.2rem; margin-bottom:1.5rem;">
-        <div style="display:flex; justify-content:space-between; font-size:0.84rem; font-weight:700; color:#101B35; margin-bottom:0.5rem;">
-            <span>Standard Clause Coverage Progress</span>
-            <span>{detected_count} / {total_expected} Standard Categories</span>
+    clean_html(
+        f"""
+        <div style="background:#FFFFFF; border:1px solid #E6EAF0; border-radius:12px; padding:1.2rem; margin-bottom:1.5rem;">
+            <div style="display:flex; justify-content:space-between; font-size:0.84rem; font-weight:700; color:#101B35; margin-bottom:0.5rem;">
+                <span>Standard Clause Coverage Progress</span>
+                <span>{detected_count} / {total_expected} Standard Categories</span>
+            </div>
+            <div style="background:#EDF2F7; height:10px; border-radius:999px; overflow:hidden;">
+                <div style="background:{'#16A36A' if coverage_pct >= 75 else '#E69A32'}; width:{coverage_pct}%; height:100%; border-radius:999px;"></div>
+            </div>
         </div>
-        <div style="background:#EDF2F7; height:10px; border-radius:999px; overflow:hidden;">
-            <div style="background:{'#16A36A' if coverage_pct >= 75 else '#E69A32'}; width:{coverage_pct}%; height:100%; border-radius:999px;"></div>
-        </div>
-    </div>
-    """,
+        """
+    ),
     unsafe_allow_html=True,
 )
 
 # Checklist Matrix
 st.markdown(
-    """
-    <div class="le-section-header">
-        <div>
-            <h3 class="le-section-title">Contract Archetype Checklist Matrix</h3>
-            <p class="le-section-subtitle">Comprehensive status of all expected clause categories</p>
+    clean_html(
+        """
+        <div class="le-section-header">
+            <div>
+                <h3 class="le-section-title">Contract Archetype Checklist Matrix</h3>
+                <p class="le-section-subtitle">Comprehensive status of all expected clause categories</p>
+            </div>
         </div>
-    </div>
-    """,
+        """
+    ),
     unsafe_allow_html=True,
 )
 
@@ -154,29 +162,33 @@ st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
 
 # Detailed Missing Clause Cards with Why It Matters, Consequences, and Actions
 st.markdown(
-    """
-    <div class="le-section-header">
-        <div>
-            <h3 class="le-section-title">Omitted Clause Risk Assessments</h3>
-            <p class="le-section-subtitle">In-depth rationale and recommended drafting additions</p>
+    clean_html(
+        """
+        <div class="le-section-header">
+            <div>
+                <h3 class="le-section-title">Omitted Clause Risk Assessments</h3>
+                <p class="le-section-subtitle">In-depth rationale and recommended drafting additions</p>
+            </div>
         </div>
-    </div>
-    """,
+        """
+    ),
     unsafe_allow_html=True,
 )
 
 if not missing_items:
     st.markdown(
-        """
-        <div class="le-card" style="border-left:4px solid #16A36A; background:#F0FDF4;">
-            <div style="font-size:0.95rem; font-weight:700; color:#166534; margin-bottom:0.25rem;">
-                ✓ Comprehensive Coverage Detected
+        clean_html(
+            """
+            <div class="le-card" style="border-left:4px solid #16A36A; background:#F0FDF4;">
+                <div style="font-size:0.95rem; font-weight:700; color:#166534; margin-bottom:0.25rem;">
+                    ✓ Comprehensive Coverage Detected
+                </div>
+                <div style="font-size:0.84rem; color:#14532D;">
+                    All standard checklist categories for this contract archetype were identified. No standard protections appear missing.
+                </div>
             </div>
-            <div style="font-size:0.84rem; color:#14532D;">
-                All standard checklist categories for this contract archetype were identified. No standard protections appear missing.
-            </div>
-        </div>
-        """,
+            """
+        ),
         unsafe_allow_html=True,
     )
 else:
@@ -187,40 +199,44 @@ else:
         relevance = item.get("relevance_note", "Consider adding this clause to prevent unallocated dispute risk.")
 
         st.markdown(
-            f"""
-            <div class="le-card" style="border-left:4px solid #E69A32; margin-bottom:1rem;">
-                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.6rem;">
-                    <div style="font-size:1.1rem; font-weight:700; color:#101B35;">
-                        {html.escape(cat_title)}
+            clean_html(
+                f"""
+                <div class="le-card" style="border-left:4px solid #E69A32; margin-bottom:1rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.6rem;">
+                        <div style="font-size:1.1rem; font-weight:700; color:#101B35;">
+                            {html.escape(cat_title)}
+                        </div>
+                        <span style="background:#FFFBEB; color:#92400E; border:1px solid #FDE68A; padding:0.2rem 0.6rem; border-radius:999px; font-size:0.75rem; font-weight:700;">
+                            {html.escape(status_label)}
+                        </span>
                     </div>
-                    <span style="background:#FFFBEB; color:#92400E; border:1px solid #FDE68A; padding:0.2rem 0.6rem; border-radius:999px; font-size:0.75rem; font-weight:700;">
-                        {html.escape(status_label)}
-                    </span>
-                </div>
 
-                <div style="font-size:0.86rem; color:#172033; line-height:1.55; margin-bottom:0.65rem;">
-                    <strong>Why This Clause Matters:</strong> {html.escape(explanation)}
-                </div>
+                    <div style="font-size:0.86rem; color:#172033; line-height:1.55; margin-bottom:0.65rem;">
+                        <strong>Why This Clause Matters:</strong> {html.escape(explanation)}
+                    </div>
 
-                <div style="background:#FFF7ED; border:1px solid #FED7AA; border-radius:8px; padding:0.65rem 0.85rem; font-size:0.82rem; color:#7C2D12;">
-                    <strong>Drafting Recommendation:</strong> {html.escape(relevance)}
+                    <div style="background:#FFF7ED; border:1px solid #FED7AA; border-radius:8px; padding:0.65rem 0.85rem; font-size:0.82rem; color:#7C2D12;">
+                        <strong>Drafting Recommendation:</strong> {html.escape(relevance)}
+                    </div>
                 </div>
-            </div>
-            """,
+                """
+            ),
             unsafe_allow_html=True,
         )
 
 # Uncertain Classifications Section
 if uncertain:
     st.markdown(
-        """
-        <div class="le-section-header" style="margin-top:1.5rem;">
-            <div>
-                <h3 class="le-section-title">Ambiguous Clauses Flagged for Manual Review</h3>
-                <p class="le-section-subtitle">Clauses where classification confidence was marginal</p>
+        clean_html(
+            """
+            <div class="le-section-header" style="margin-top:1.5rem;">
+                <div>
+                    <h3 class="le-section-title">Ambiguous Clauses Flagged for Manual Review</h3>
+                    <p class="le-section-subtitle">Clauses where classification confidence was marginal</p>
+                </div>
             </div>
-        </div>
-        """,
+            """
+        ),
         unsafe_allow_html=True,
     )
     st.dataframe(pd.DataFrame(uncertain), use_container_width=True, hide_index=True)

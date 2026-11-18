@@ -3,7 +3,7 @@
 import html
 import streamlit as st
 
-from frontend.components.risk_cards import RISK_COLORS, render_kpi_card, risk_badge_html
+from frontend.components.risk_cards import RISK_COLORS, clean_html, render_kpi_card, risk_badge_html
 from frontend.components.sidebar import (
     get_api_client,
     render_disclaimer_footer,
@@ -51,26 +51,29 @@ if selected_id:
         r_badge = risk_badge_html(level_val)
 
         st.markdown(
-            f"""
-            <div class="le-card" style="border-top:3px solid #356AE6; background:#FFFFFF;">
-                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.75rem;">
-                    <div>
-                        <span style="font-size:0.75rem; font-weight:700; text-transform:uppercase; color:#748094;">Contract Audit Summary</span>
-                        <div style="font-size:1.2rem; font-weight:800; color:#101B35;">{html.escape(analysis['filename'])}</div>
+            clean_html(
+                f"""
+                <div class="le-card" style="border-top:3px solid #356AE6; background:#FFFFFF; margin-bottom:1rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.75rem;">
+                        <div>
+                            <span style="font-size:0.75rem; font-weight:700; text-transform:uppercase; color:#748094;">Contract Audit Summary</span>
+                            <div style="font-size:1.2rem; font-weight:800; color:#101B35;">{html.escape(analysis['filename'])}</div>
+                        </div>
+                        <div style="display:flex; align-items:center; gap:0.6rem;">
+                            {r_badge}
+                            <span style="font-size:0.85rem; font-weight:700; color:#101B35; background:#F8FAFC; border:1px solid #E6EAF0; padding:0.25rem 0.65rem; border-radius:6px;">
+                                Score: {score_val}/100
+                            </span>
+                        </div>
                     </div>
-                    <div style="display:flex; align-items:center; gap:0.6rem;">
-                        {r_badge}
-                        <span style="font-size:0.85rem; font-weight:700; color:#101B35; background:#F8FAFC; border:1px solid #E6EAF0; padding:0.25rem 0.65rem; border-radius:6px;">
-                            Score: {score_val}/100
-                        </span>
+                    <div style="font-size:0.82rem; color:#748094;">
+                        ID: <code>{html.escape(selected_id)}</code> &bull;
+                        Type: <strong>{html.escape(analysis.get('detected_contract_type', 'General'))}</strong> &bull;
+                        Engine: <code>{html.escape(mode_val)}</code>
                     </div>
                 </div>
-                <div style="font-size:0.82rem; color:#748094; margin-bottom:1rem;">
-                    ID: <code>{html.escape(selected_id)}</code> &bull;
-                    Type: <strong>{html.escape(analysis.get('detected_contract_type', 'General'))}</strong> &bull;
-                    Engine: <code>{html.escape(mode_val)}</code>
-                </div>
-            """,
+                """
+            ),
             unsafe_allow_html=True,
         )
 
@@ -86,8 +89,6 @@ if selected_id:
                 type="primary",
                 use_container_width=True,
             )
-
-        st.markdown("</div>", unsafe_allow_html=True)
 
     except APIError as exc:
         st.info(f"Report dossier unavailable for active contract: {exc.message}")

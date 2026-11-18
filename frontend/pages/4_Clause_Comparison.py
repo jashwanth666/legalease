@@ -4,6 +4,7 @@ import html
 import streamlit as st
 
 from frontend.components.clause_viewer import render_side_by_side_comparison
+from frontend.components.risk_cards import clean_html
 from frontend.components.sidebar import (
     get_api_client,
     render_disclaimer_footer,
@@ -29,15 +30,17 @@ if health is None:
 
 if not selected_id:
     st.markdown(
-        """
-        <div class="le-card" style="text-align:center; padding:2rem;">
-            <div style="font-size:2rem; margin-bottom:0.5rem;">⚖️</div>
-            <div style="font-size:1.1rem; font-weight:700; color:#101B35;">No Contract Selected</div>
-            <div style="font-size:0.84rem; color:#748094; max-width:400px; margin:0.25rem auto 1rem auto;">
-                Please select a contract from the sidebar to inspect its benchmark clause comparisons.
+        clean_html(
+            """
+            <div class="le-card" style="text-align:center; padding:2rem;">
+                <div style="font-size:2rem; margin-bottom:0.5rem;">⚖️</div>
+                <div style="font-size:1.1rem; font-weight:700; color:#101B35;">No Contract Selected</div>
+                <div style="font-size:0.84rem; color:#748094; max-width:400px; margin:0.25rem auto 1rem auto;">
+                    Please select a contract from the sidebar to inspect its benchmark clause comparisons.
+                </div>
             </div>
-        </div>
-        """,
+            """
+        ),
         unsafe_allow_html=True,
     )
     st.stop()
@@ -52,38 +55,42 @@ except APIError as exc:
 
 # Benchmark Context & Notice Bar
 st.markdown(
-    f"""
-    <div class="le-card" style="border-left:4px solid #356AE6; background:#F8FAFC;">
-        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
-            <div>
-                <span style="font-size:0.75rem; font-weight:700; text-transform:uppercase; color:#356AE6;">Benchmark Comparison Telemetry</span>
-                <div style="font-size:1.1rem; font-weight:700; color:#101B35;">{html.escape(compare_data.get('filename', 'Contract'))}</div>
+    clean_html(
+        f"""
+        <div class="le-card" style="border-left:4px solid #356AE6; background:#F8FAFC;">
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem;">
+                <div>
+                    <span style="font-size:0.75rem; font-weight:700; text-transform:uppercase; color:#356AE6;">Benchmark Comparison Telemetry</span>
+                    <div style="font-size:1.1rem; font-weight:700; color:#101B35;">{html.escape(compare_data.get('filename', 'Contract'))}</div>
+                </div>
+                <div style="font-size:0.82rem; color:#748094;">
+                    Detected Type: <strong style="color:#101B35;">{html.escape(compare_data.get('detected_contract_type', 'General'))}</strong> &bull;
+                    Compared Clauses: <strong style="color:#101B35;">{compare_data.get('count', 0)}</strong>
+                </div>
             </div>
-            <div style="font-size:0.82rem; color:#748094;">
-                Detected Type: <strong style="color:#101B35;">{html.escape(compare_data.get('detected_contract_type', 'General'))}</strong> &bull;
-                Compared Clauses: <strong style="color:#101B35;">{compare_data.get('count', 0)}</strong>
+            <div style="margin-top:0.5rem; font-size:0.8rem; color:#748094; line-height:1.45;">
+                {html.escape(compare_data.get('illustrative_notice', 'Illustrative reference templates provide market comparison points, not mandatory drafting standards.'))}
             </div>
         </div>
-        <div style="margin-top:0.5rem; font-size:0.8rem; color:#748094; line-height:1.45;">
-            {html.escape(compare_data.get('illustrative_notice', 'Illustrative reference templates provide market comparison points, not mandatory drafting standards.'))}
-        </div>
-    </div>
-    """,
+        """
+    ),
     unsafe_allow_html=True,
 )
 
 comparisons = compare_data.get("comparisons", [])
 if not comparisons:
     st.markdown(
-        """
-        <div class="le-card" style="text-align:center; padding:2rem;">
-            <div style="font-size:1.8rem; margin-bottom:0.5rem;">🔍</div>
-            <div style="font-size:1rem; font-weight:700; color:#101B35;">No Comparative Benchmarks Found</div>
-            <div style="font-size:0.82rem; color:#748094; max-width:420px; margin:0.25rem auto 0 auto;">
-                The FAISS vector retriever found no relevant reference clauses matching the categories in this document.
+        clean_html(
+            """
+            <div class="le-card" style="text-align:center; padding:2rem;">
+                <div style="font-size:1.8rem; margin-bottom:0.5rem;">🔍</div>
+                <div style="font-size:1rem; font-weight:700; color:#101B35;">No Comparative Benchmarks Found</div>
+                <div style="font-size:0.82rem; color:#748094; max-width:420px; margin:0.25rem auto 0 auto;">
+                    The FAISS vector retriever found no relevant reference clauses matching the categories in this document.
+                </div>
             </div>
-        </div>
-        """,
+            """
+        ),
         unsafe_allow_html=True,
     )
 else:
@@ -106,11 +113,13 @@ else:
     ]
 
     st.markdown(
-        f"""
-        <div style="font-size:0.8rem; font-weight:600; color:#748094; margin:0.5rem 0 1.25rem 0;">
-            Displaying <strong style="color:#101B35;">{len(filtered)}</strong> of {len(comparisons)} comparative clauses
-        </div>
-        """,
+        clean_html(
+            f"""
+            <div style="font-size:0.8rem; font-weight:600; color:#748094; margin:0.5rem 0 1.25rem 0;">
+                Displaying <strong style="color:#101B35;">{len(filtered)}</strong> of {len(comparisons)} comparative clauses
+            </div>
+            """
+        ),
         unsafe_allow_html=True,
     )
 
