@@ -136,13 +136,17 @@ def _build_analysis_payload(doc: Document, db: Session) -> dict[str, Any]:
     ver_missing = sum(1 for m in ms_cats if m.get("verified", True))
     unver_missing = len(ms_cats) - ver_missing
 
-    all_ver = (unver_risks == 0 and unver_comps == 0 and unver_meta == 0 and unver_missing == 0) if (risks or comparisons or total_meta) else True
+    total_findings = len(risks) + len(comparisons) + total_meta + len(ms_cats)
+    total_verified = ver_risks + ver_comps + ver_meta + ver_missing
+    total_unverified = unver_risks + unver_comps + unver_meta + unver_missing
+    all_ver = (total_unverified == 0) if total_findings > 0 else True
 
     verification_summary = {
         "all_verified": all_ver,
-        "total_findings": len(risks) + len(comparisons) + total_meta + len(ms_cats),
-        "total_verified": ver_risks + ver_comps + ver_meta + ver_missing,
-        "total_unverified": unver_risks + unver_comps + unver_meta + unver_missing,
+        "total_findings": total_findings,
+        "total_verified": total_verified,
+        "total_unverified": total_unverified,
+        "verification_rate_percent": round((total_verified / total_findings * 100), 1) if total_findings > 0 else 100.0,
         "risks": {"total": len(risks), "verified": ver_risks, "unverified": unver_risks},
         "comparisons": {"total": len(comparisons), "verified": ver_comps, "unverified": unver_comps},
         "metadata": {"total": total_meta, "verified": ver_meta, "unverified": unver_meta},
@@ -189,10 +193,14 @@ def _build_analysis_payload(doc: Document, db: Session) -> dict[str, Any]:
         "report_available": report is not None and doc.processing_status == "analyzed",
         "report_path": report.report_path if report else "",
         "verified_findings": {
-            "all_verified": (all(bool(r.verified) for r in risks) and all(not getattr(c, "insufficient_evidence", False) for c in comparisons)) if (risks or comparisons) else True,
+            "all_verified": all_ver,
+            "total_audited": total_findings,
+            "total_verified": total_verified,
+            "total_unverified": total_unverified,
             "verified_risk_count": ver_risks,
             "verified_comparison_count": ver_comps,
             "verified_metadata_count": ver_meta,
+            "verified_missing_clauses_count": ver_missing,
         },
         "verification_summary": verification_summary,
         "disclaimer": LEGAL_DISCLAIMER,
@@ -304,13 +312,6 @@ async def analyze_document(
             detail="Employees may only analyze their own documents.",
         )
 
-    # Concurrency control: prevent duplicate jobs on active analysis
-    if doc.processing_status in ("queued", "processing"):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Document '{document_id}' is already being analyzed (status: {doc.processing_status}, stage: {doc.current_stage}). Please wait for the current analysis to complete.",
-        )
-
     tenant_id = doc.tenant_id or "default_tenant"
     tenant_upload = settings.upload_dir / tenant_id / doc.stored_filename
     file_path = tenant_upload if tenant_upload.exists() else (settings.upload_dir / doc.stored_filename)
@@ -320,12 +321,40 @@ async def analyze_document(
             detail=f"Stored document binary is missing for '{document_id}'.",
         )
 
-    doc.processing_status = "queued"
-    doc.current_stage = "queued"
-    doc.progress_percent = 5
-    doc.completed_stages_json = "[]"
-    doc.last_error = None
+    # Concurrency control: atomic compare-and-swap (CAS) job claiming
+    # Only transitions to 'queued' if the document is NOT already in ('queued', 'processing')
+    claimed_count = (
+        db.query(Document)
+        .filter(
+            Document.document_id == document_id,
+            Document.tenant_id == current_user.tenant_id,
+            Document.processing_status.notin_(["queued", "processing"]),
+        )
+        .update(
+            {
+                Document.processing_status: "queued",
+                Document.current_stage: "queued",
+                Document.progress_percent: 5,
+                Document.completed_stages_json: "[]",
+                Document.last_error: None,
+            },
+            synchronize_session="fetch",
+        )
+    )
     db.commit()
+
+    if claimed_count == 0:
+        db.expire_all()
+        refreshed_doc = db.query(Document).filter(
+            Document.document_id == document_id,
+            Document.tenant_id == current_user.tenant_id,
+        ).first()
+        active_status = refreshed_doc.processing_status if refreshed_doc else "processing"
+        active_stage = refreshed_doc.current_stage if refreshed_doc else "queued"
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Document '{document_id}' is already being analyzed (status: {active_status}, stage: {active_stage}). Please wait for the current analysis to complete.",
+        )
 
     if wait:
         run_contract_analysis_task(document_id, settings)

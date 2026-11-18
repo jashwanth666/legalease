@@ -222,6 +222,49 @@ with tab_sec:
             unsafe_allow_html=True,
         )
 
+        if curr_user.get("role") == "admin":
+            with st.expander("👥 Organization Team & Role Management (Admin Only)", expanded=False):
+                st.markdown("##### Provision New Workspace Team Member")
+                col_u1, col_u2 = st.columns(2)
+                with col_u1:
+                    new_u_email = st.text_input("User Email", key="admin_add_email", placeholder="reviewer@firm.com")
+                    new_u_name = st.text_input("Full Name", key="admin_add_name", placeholder="Alice Legal")
+                with col_u2:
+                    new_u_pw = st.text_input("Initial Password", type="password", key="admin_add_pw", placeholder="••••••••")
+                    new_u_role = st.selectbox(
+                        "Assigned Role",
+                        options=["legal_reviewer", "employee", "admin"],
+                        format_func=lambda r: {"admin": "Admin", "legal_reviewer": "Legal Reviewer", "employee": "Employee"}.get(r, r),
+                        key="admin_add_role",
+                    )
+                if st.button("Provision Account in Tenant", type="primary", key="btn_provision_user"):
+                    if not new_u_email or not new_u_pw:
+                        st.error("Email and password are required.")
+                    else:
+                        try:
+                            client.create_tenant_user(
+                                email=new_u_email.strip(),
+                                password=new_u_pw,
+                                full_name=new_u_name.strip() or None,
+                                role=new_u_role,
+                            )
+                            st.success(f"Successfully provisioned user {new_u_email} with role {new_u_role}!")
+                            st.rerun()
+                        except APIError as exc:
+                            st.error(exc.message)
+
+                st.markdown("<hr style='margin:1rem 0; opacity:0.15;' />", unsafe_allow_html=True)
+                st.markdown("##### Existing Workspace Users")
+                try:
+                    users_list = client.list_tenant_users()
+                    user_rows = [
+                        {"ID": u["id"], "Full Name": u.get("full_name") or "N/A", "Email": u["email"], "Role": u["role"].upper(), "Status": "Active" if u["is_active"] else "Inactive"}
+                        for u in users_list
+                    ]
+                    st.dataframe(user_rows, use_container_width=True, hide_index=True)
+                except APIError as exc:
+                    st.caption(f"Could not load users: {exc.message}")
+
     st.markdown(
         """
         <div class="le-card" style="margin-bottom:0.85rem;">

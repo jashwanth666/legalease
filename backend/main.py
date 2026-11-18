@@ -14,7 +14,8 @@ from backend.api import (
     upload_router,
 )
 from backend.config import LEGAL_DISCLAIMER, get_settings
-from backend.database import init_db
+from backend.database import Document, init_db
+from backend.database import db as db_module
 from backend.schemas.report import HealthResponse
 
 
@@ -22,13 +23,35 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    settings.validate_production_security()
     settings.ensure_directories()
     init_db()
+
+    # Stale background job recovery on server startup
+    try:
+        with db_module.SessionLocal() as db:
+            stale_jobs = db.query(Document).filter(
+                Document.processing_status.in_(["queued", "processing"])
+            ).all()
+            if stale_jobs:
+                logger.warning(
+                    "Detected %d uncompleted contract analysis jobs from prior server session. Resetting to failed.",
+                    len(stale_jobs),
+                )
+                for doc in stale_jobs:
+                    doc.processing_status = "failed"
+                    doc.current_stage = "interrupted"
+                    doc.last_error = "Analysis was interrupted by server restart. Ready to retry."
+                db.commit()
+    except Exception as exc:
+        logger.error("Failed to recover stale background analysis jobs on startup: %s", exc)
+
     yield
 
 

@@ -76,7 +76,7 @@ def test_missing_clause_detection_and_evidence_verification():
             "clause_id": "CL-001",
             "original_clause": "Clause text",
             "page_number": 1,
-            "explanation": "Explained",
+            "explanation": "Clause text explanation",
         }
     ]
     comparisons = [
@@ -143,7 +143,9 @@ def test_full_end_to_end_langgraph_and_pdf_report_pipeline(api_client):
     assert analysis["overall_risk_score"] > 0
     assert analysis["risk_distribution"]["total"] == 9
     assert len(analysis["risk_findings"]) == 9
-    assert analysis["verified_findings"]["all_verified"] is True
+    assert analysis["verified_findings"]["all_verified"] == analysis["verification_summary"]["all_verified"]
+    assert analysis["verified_findings"]["verified_risk_count"] == 5
+    assert analysis["verification_summary"]["risks"]["unverified"] == 4
     assert analysis["report_available"] is True
 
     # Missing clauses for Service Agreement (Dispute Resolution & Jurisdiction are missing in sample)

@@ -91,6 +91,10 @@ def render_auth_view(client: LegalEaseAPIClient) -> None:
 
         with tab_register:
             st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+            st.info(
+                "ℹ️ **Public Workspace Registration:** New accounts are provisioned with standard **Employee** permissions. "
+                "To join an existing corporate organization, request an invitation from your tenant administrator."
+            )
             reg_name = st.text_input("Full Name", key="reg_name_input", placeholder="Jashwanth R")
             reg_email = st.text_input("Work Email", key="reg_email_input", placeholder="jashwanth@firm.com")
             reg_password = st.text_input(
@@ -100,22 +104,12 @@ def render_auth_view(client: LegalEaseAPIClient) -> None:
                 placeholder="••••••••",
             )
 
-            reg_role = st.selectbox(
-                "Role",
-                options=["legal_reviewer", "admin", "employee"],
-                format_func=lambda r: {
-                    "admin": "Admin (Full Organization Management)",
-                    "legal_reviewer": "Legal Reviewer (Contract Risk Assessment & Audit)",
-                    "employee": "Employee (Document Ingestion & Read-Only)",
-                }.get(r, r),
-                key="reg_role_input",
-            )
-
             reg_tenant = st.text_input(
-                "Organization / Tenant ID",
-                value="default_tenant",
+                "New Organization / Workspace Name (Optional)",
+                value="",
                 key="reg_tenant_input",
-                help="Multi-tenant isolation scopes all contracts, vector stores, and reports to this organization ID.",
+                placeholder="e.g. acme-legal",
+                help="Enter a unique workspace ID for your new organization. If left blank, a dedicated private workspace is assigned.",
             )
 
             if st.button("Create Account & Workspace", type="primary", use_container_width=True, key="reg_submit_btn"):
@@ -129,8 +123,7 @@ def render_auth_view(client: LegalEaseAPIClient) -> None:
                             email=reg_email.strip(),
                             password=reg_password,
                             full_name=reg_name.strip(),
-                            role=reg_role,
-                            tenant_id=reg_tenant.strip() or "default_tenant",
+                            tenant_id=reg_tenant.strip() or None,
                         )
                         # Auto-login after registration
                         res = client.login(reg_email.strip(), reg_password)

@@ -160,3 +160,92 @@ def test_risk_finding_four_verification_checks():
     assert res["all_verified"] is True
     assert res["verified_risk_count"] == 1
     assert res["unverified_count"] == 0
+
+
+def test_risk_finding_substantive_reasoning_rejection():
+    """Verify that an explanation is rejected if its legal claims are not substantively discussed in the clause."""
+    pages = [{"page_number": 1, "location_type": "pdf_page", "text": "Confidential information shall be kept secret."}]
+    clauses = [
+        {
+            "clause_id": "CL-020",
+            "page_number": 1,
+            "location_type": "pdf_page",
+            "original_text": "Confidential information shall be kept secret.",
+        }
+    ]
+    # Finding hallucinates a liability cap on a confidentiality clause
+    risks = [
+        {
+            "clause_id": "CL-020",
+            "original_clause": "Confidential information shall be kept secret.",
+            "page_number": 1,
+            "location_type": "pdf_page",
+            "risk_title": "Severe Liability Cap",
+            "category": "liability_cap",
+            "explanation": "Imposes an aggregate liability damages cap limiting contractor recovery.",
+            "risk_level": "high",
+            "finding_type": "detected_risk",
+        }
+    ]
+
+    res = SummaryAgent.verify_evidence(
+        pages=pages,
+        clauses=clauses,
+        classified_clauses=[],
+        risk_results=risks,
+        retrieved_references={},
+        comparison_results=[],
+        missing_clauses={"missing_categories": []},
+        contract_metadata={},
+        extracted_text="Confidential information shall be kept secret.",
+    )
+
+    finding = risks[0]
+    assert finding["verified"] is False
+    assert finding["verification_checks"]["quote_exists"] is True
+    assert finding["verification_checks"]["exact_location_valid"] is True
+    # Substantive reasoning must be FALSE because the clause does not discuss liability!
+    assert finding["verification_checks"]["interpretation_grounded"] is False
+    assert "not substantively discussed" in finding["verification_note"]
+    assert res["all_verified"] is False
+    assert res["unverified_count"] == 1
+
+
+def test_uncertain_finding_interpretation_not_grounded():
+    """Uncertain findings must have interpretation_grounded=False and verified=False."""
+    pages = [{"page_number": 1, "location_type": "pdf_page", "text": "Some ambiguous contractual wording."}]
+    clauses = [
+        {
+            "clause_id": "CL-030",
+            "page_number": 1,
+            "location_type": "pdf_page",
+            "original_text": "Some ambiguous contractual wording.",
+        }
+    ]
+    risks = [
+        {
+            "clause_id": "CL-030",
+            "original_clause": "Some ambiguous contractual wording.",
+            "page_number": 1,
+            "location_type": "pdf_page",
+            "explanation": "Wording is vague and requires attorney clarification.",
+            "risk_level": "uncertain",
+            "finding_type": "uncertain_finding",
+        }
+    ]
+
+    res = SummaryAgent.verify_evidence(
+        pages=pages,
+        clauses=clauses,
+        classified_clauses=[],
+        risk_results=risks,
+        retrieved_references={},
+        comparison_results=[],
+        missing_clauses={"missing_categories": []},
+        contract_metadata={},
+        extracted_text="Some ambiguous contractual wording.",
+    )
+
+    finding = risks[0]
+    assert finding["verified"] is False
+    assert finding["verification_checks"]["interpretation_grounded"] is False

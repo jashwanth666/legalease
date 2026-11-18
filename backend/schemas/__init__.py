@@ -1,4 +1,5 @@
 from backend.schemas.auth import (
+    AdminCreateUserRequest,
     TokenResponse,
     UserLoginRequest,
     UserRegisterRequest,

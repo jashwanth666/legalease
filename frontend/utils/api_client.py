@@ -73,17 +73,36 @@ class LegalEaseAPIClient:
         email: str,
         password: str,
         full_name: str,
+        tenant_id: str | None = None,
         role: str = "employee",
-        tenant_id: str = "default_tenant",
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "email": email,
+            "password": password,
+            "full_name": full_name,
+            "role": "employee",
+        }
+        if tenant_id and tenant_id.strip():
+            payload["tenant_id"] = tenant_id.strip()
+        return self._request("POST", "/api/auth/register", json=payload).json()
+
+    def create_tenant_user(
+        self,
+        email: str,
+        password: str,
+        full_name: str,
+        role: str = "employee",
     ) -> dict[str, Any]:
         payload = {
             "email": email,
             "password": password,
             "full_name": full_name,
             "role": role,
-            "tenant_id": tenant_id,
         }
-        return self._request("POST", "/api/auth/register", json=payload).json()
+        return self._request("POST", "/api/auth/users", json=payload).json()
+
+    def list_tenant_users(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/api/auth/users").json()
 
     def login(self, email: str, password: str) -> dict[str, Any]:
         payload = {"email": email, "password": password}

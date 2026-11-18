@@ -321,6 +321,68 @@ class SummaryAgent:
         return True, None
 
     @staticmethod
+    def _validate_risk_substantive_reasoning(finding: dict[str, Any], clause_text: str) -> tuple[bool, str | None]:
+        """Verify that the risk explanation is grounded in the substantive legal content of the cited clause.
+
+        Separates verbatim quotation proof from substantive reasoning verification.
+        Does not mark a finding verified simply because an explanation string exists.
+        """
+        explanation = (finding.get("explanation") or "").strip()
+        if not explanation or len(explanation) < 5:
+            return False, "Explanation is missing or trivial."
+
+        # Findings flagged as uncertain have unresolved legal interpretation
+        if finding.get("risk_level") == "uncertain" or finding.get("finding_type") in ("uncertain_finding", "missing_information"):
+            return False, "Finding is marked as uncertain or lacks grounded interpretation."
+
+        clause_lower = clause_text.lower()
+        expl_lower = explanation.lower()
+
+        # Check for placeholder text
+        if expl_lower in ("n/a", "none", "not applicable", "no risk detected", "routine clause"):
+            if finding.get("risk_score", 0) and finding.get("risk_score", 0) > 30:
+                return False, "Explanation is a non-substantive placeholder despite non-routine risk score."
+
+        # Categorical substantive marker alignment:
+        category = str(finding.get("category") or "").lower()
+        title = str(finding.get("risk_title") or finding.get("clause_title") or "").lower()
+        risk_concept = f"{category} {title}"
+
+        topic_markers: dict[str, list[str]] = {
+            "liab": ["liab", "damage", "cap", "limit", "exceed", "aggregate", "consequential", "indirect", "sole remedy", "loss"],
+            "indemn": ["indemn", "defend", "hold harmless"],
+            "terminat": ["terminat", "cancel", "expire", "breach", "notice", "immediate", "cure period", "default"],
+            "confident": ["confident", "disclos", "secret", "proprietary", "recipient", "non-disclosure"],
+            "pay": ["pay", "fee", "invoice", "charge", "dollar", "$", "remit", "compensation", "cost"],
+            "warrant": ["warrant", "as-is", "as is", "guarantee", "merchantab", "fitness", "disclaim"],
+            "intellect": ["intellectual", "copyright", "patent", "trademark", "ownership", "assign", "work made for hire"],
+            "dispute": ["jurisdiction", "govern", "court", "arbitrat", "law", "venue", "dispute", "litigat"],
+            "non-compete": ["compete", "restrict", "solicit", "exclusiv"],
+        }
+
+        for concept_prefix, markers in topic_markers.items():
+            if concept_prefix in risk_concept:
+                if not any(m in clause_lower for m in markers):
+                    return False, f"Risk claim for '{concept_prefix}' is not substantively discussed in the cited clause."
+
+        # Substantive token grounding check:
+        stopwords = {
+            "this", "that", "with", "from", "shall", "will", "either", "party", "parties",
+            "agreement", "clause", "contract", "section", "pursuant", "provided", "including",
+            "states", "creates", "contains", "imposes", "exposure", "potential", "detected", "presents"
+        }
+        expl_tokens = [
+            t for t in re.findall(r"[a-z0-9]+", expl_lower)
+            if len(t) >= 4 and t not in stopwords
+        ]
+        if expl_tokens:
+            matched_tokens = sum(1 for t in expl_tokens if t in clause_lower or (len(t) >= 5 and t[:4] in clause_lower))
+            if matched_tokens == 0:
+                return False, "Explanation claims lack substantive semantic grounding in cited clause text."
+
+        return True, None
+
+    @staticmethod
     def _verify_source_location(
         quote: str,
         page_number: int | None,
@@ -515,7 +577,8 @@ class SummaryAgent:
                 clauses=clauses,
             )
 
-            interpretation_grounded = bool(explanation)
+            reasoning_valid, reasoning_note = SummaryAgent._validate_risk_substantive_reasoning(finding, orig_text)
+            interpretation_grounded = reasoning_valid
 
             finding["verification_checks"] = {
                 "quote_exists": loc_check["quote_exists"],
@@ -541,7 +604,7 @@ class SummaryAgent:
                 elif not loc_check["exact_location_valid"]:
                     reasons.append(loc_check["note"] or "exact location mismatch")
                 if not interpretation_grounded:
-                    reasons.append("finding marked as uncertain or lacks grounded explanation")
+                    reasons.append(reasoning_note or "finding marked as uncertain or lacks grounded explanation")
                 note_str = "; ".join(reasons).capitalize() + "."
                 finding["verification_note"] = note_str
                 verification_notes.append(f"Risk finding for {cid} marked unverified: {note_str}")
@@ -554,8 +617,10 @@ class SummaryAgent:
             refs = retrieved_references.get(cid, [])
             ref_text = (comp.get("reference_clause") or "").strip()
             ref_source = (comp.get("reference_source") or "").strip()
+            uploaded_clause = (comp.get("uploaded_clause") or "").strip()
+            similarity = comp.get("similarity_score", 0.0)
 
-            if comp.get("insufficient_evidence"):
+            if comp.get("insufficient_evidence") or similarity < 0.05:
                 comp["verified"] = False
                 unverified_count += 1
                 comp["verification_checks"] = {
@@ -577,19 +642,51 @@ class SummaryAgent:
                 and r.get("reference_source", "").strip() == ref_source
                 for r in refs
             )
+
+            # Check uploaded clause location
+            page_no = comp.get("page_number")
+            para_idx = comp.get("paragraph_index")
+            loc_type = comp.get("location_type") or ("docx_paragraph" if is_docx else "pdf_page")
+
+            loc_check = SummaryAgent._verify_source_location(
+                quote=uploaded_clause,
+                page_number=page_no,
+                paragraph_index=para_idx,
+                location_type=loc_type,
+                pdf_page_text_map=pdf_page_text_map,
+                docx_para_text_map=docx_para_text_map,
+                extracted_text=extracted_text,
+                clauses=clauses,
+            )
+
+            interpretation_grounded = ref_matched and bool(uploaded_clause) and similarity >= 0.05
+
             comp["verification_checks"] = {
-                "quote_exists": True,
-                "exact_location_valid": True,
+                "quote_exists": loc_check["quote_exists"],
+                "exact_location_valid": loc_check["exact_location_valid"],
                 "value_supported": ref_matched,
-                "interpretation_grounded": ref_matched,
+                "interpretation_grounded": interpretation_grounded,
             }
-            comp["verified"] = ref_matched
-            if not ref_matched:
+            comp_valid = (
+                loc_check["quote_exists"]
+                and loc_check["exact_location_valid"]
+                and ref_matched
+                and interpretation_grounded
+            )
+            comp["verified"] = comp_valid
+            if not comp_valid:
                 unverified_count += 1
-                comp["verification_note"] = (
-                    "Retrieved reference wording or source could not be confirmed in template store."
-                )
-                verification_notes.append(f"Comparison for {cid} marked unverified.")
+                reasons = []
+                if not loc_check["quote_exists"]:
+                    reasons.append("uploaded clause text not found in document")
+                elif not loc_check["exact_location_valid"]:
+                    reasons.append(loc_check["note"] or "exact location mismatch")
+                if not ref_matched:
+                    reasons.append("retrieved reference wording or source could not be confirmed in template store")
+                if not interpretation_grounded:
+                    reasons.append("substantive comparison alignment could not be verified")
+                comp["verification_note"] = "; ".join(reasons).capitalize() + "."
+                verification_notes.append(f"Comparison for {cid} marked unverified: {comp['verification_note']}")
             else:
                 comp["verification_note"] = None
 

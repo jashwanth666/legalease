@@ -39,9 +39,26 @@ class Settings(BaseSettings):
 
     database_url: str = f"sqlite:///{(BASE_DIR / 'storage' / 'legalease.db').as_posix()}"
 
+    environment: str = "development"
+    cookie_secure: bool = False
     jwt_secret_key: str = "legalease-production-jwt-secret-key-change-in-env-32bytes"
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 1440
+
+    def validate_production_security(self) -> None:
+        """Validate production security posture, failing startup if insecure."""
+        if self.environment.lower() == "production":
+            insecure_defaults = {
+                "insecure-default-secret-key-change-in-production",
+                "legalease-production-jwt-secret-key-change-in-env-32bytes",
+                "secret",
+                "changeme",
+            }
+            if not self.jwt_secret_key or self.jwt_secret_key in insecure_defaults or len(self.jwt_secret_key) < 32:
+                raise ValueError(
+                    "CRITICAL SECURITY CONFIGURATION ERROR: Running in production environment with an unconfigured "
+                    "or default JWT_SECRET_KEY. Please configure a cryptographically strong secret of at least 32 bytes."
+                )
 
     @property
     def max_upload_size_bytes(self) -> int:
