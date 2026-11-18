@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from backend.api.auth import reset_auth_rate_limits
 from backend.auth.security import (
     JWTError,
     create_access_token,
@@ -39,12 +40,14 @@ class _AuthTestSettings(Settings):
 
 @pytest.fixture
 def auth_client(tmp_path: Path):
+    reset_auth_rate_limits()
     db_path = tmp_path / "auth_test.db"
     settings = _AuthTestSettings(
         test_root=tmp_path,
         database_url=f"sqlite:///{db_path.as_posix()}",
         gemini_api_key="",
         jwt_secret_key="test-secret-key-for-unit-testing-32bytes!",
+        admin_bootstrap_secret="test-bootstrap-secret-1234567890",
     )
     for p in (
         settings.upload_dir,
@@ -111,30 +114,41 @@ def test_jwt_create_and_decode():
 
 
 def test_register_and_login_flow(auth_client):
-    """End-to-end test of user registration, bootstrap admin, login, and authenticated /me endpoint."""
+    """End-to-end test of administrator bootstrap, user registration, login, and access controls."""
     client, settings = auth_client
 
-    # 1. First registered user in empty DB is bootstrapped as system admin
+    # 1. Check bootstrap status initially
+    status_resp = client.get("/api/auth/bootstrap-status")
+    assert status_resp.status_code == 200
+    assert status_resp.json()["bootstrapped"] is False
+
+    # 2. Administrator bootstrap initializes the first system administrator
     admin_payload = {
         "email": "bootstrap_admin@legalcorp.com",
         "password": "SecurePassword123!",
         "full_name": "Elena Rostova",
+        "bootstrap_secret": "test-bootstrap-secret-1234567890",
         "tenant_id": "tenant_legalcorp",
     }
-    reg_resp = client.post("/api/auth/register", json=admin_payload)
-    assert reg_resp.status_code == 201
-    admin_data = reg_resp.json()
+    boot_resp = client.post("/api/auth/bootstrap-admin", json=admin_payload)
+    assert boot_resp.status_code == 201
+    admin_data = boot_resp.json()
     assert admin_data["email"] == "bootstrap_admin@legalcorp.com"
     assert admin_data["role"] == "admin"
     assert admin_data["tenant_id"] == "tenant_legalcorp"
     assert "hashed_password" not in admin_data
 
-    # 2. Duplicate registration rejection
-    dup_resp = client.post("/api/auth/register", json=admin_payload)
-    assert dup_resp.status_code == 409
-    assert "already exists" in dup_resp.json()["detail"]
+    # Bootstrap status now reflects that setup is completed
+    status_resp2 = client.get("/api/auth/bootstrap-status")
+    assert status_resp2.status_code == 200
+    assert status_resp2.json()["bootstrapped"] is True
 
-    # 3. Subsequent public registration can ONLY create role 'employee'
+    # 3. Duplicate bootstrap attempt is permanently rejected (HTTP 409)
+    dup_boot = client.post("/api/auth/bootstrap-admin", json=admin_payload)
+    assert dup_boot.status_code == 409
+    assert "already been initialized" in dup_boot.json()["detail"]
+
+    # 4. Public registration strictly creates role 'employee' in an isolated workspace
     emp_payload = {
         "email": "worker@acme.com",
         "password": "WorkerPassword123!",
@@ -144,8 +158,14 @@ def test_register_and_login_flow(auth_client):
     emp_resp = client.post("/api/auth/register", json=emp_payload)
     assert emp_resp.status_code == 201
     assert emp_resp.json()["role"] == "employee"
+    assert emp_resp.json()["tenant_id"] == "tenant_acme"
 
-    # 4. Attempting to register with privileged role 'admin' or 'legal_reviewer' via public API is rejected
+    # Duplicate email in public registration rejected (HTTP 409)
+    dup_emp = client.post("/api/auth/register", json=emp_payload)
+    assert dup_emp.status_code == 409
+    assert "already exists" in dup_emp.json()["detail"]
+
+    # 5. Attempting to register with privileged role 'admin' or 'legal_reviewer' via public API is rejected (HTTP 422)
     priv_payload = {
         "email": "hacker@evil.com",
         "password": "HackerPassword123!",
@@ -156,7 +176,7 @@ def test_register_and_login_flow(auth_client):
     assert priv_resp.status_code == 422
     assert "Public self-registration only permits creating Employee accounts" in priv_resp.text
 
-    # 5. Attempting to self-register into an EXISTING tenant organization is rejected (HTTP 403)
+    # 6. Attempting to self-register into an EXISTING tenant organization is rejected (HTTP 403)
     infiltrate_payload = {
         "email": "intruder@evil.com",
         "password": "IntruderPassword123!",
@@ -167,7 +187,7 @@ def test_register_and_login_flow(auth_client):
     assert infiltrate_resp.status_code == 403
     assert "already exists" in infiltrate_resp.json()["detail"]
 
-    # 6. Admin creates a legal_reviewer within their tenant via POST /api/auth/users
+    # 7. Admin creates a legal_reviewer within their tenant via POST /api/auth/users
     admin_login = client.post(
         "/api/auth/login",
         json={"email": "bootstrap_admin@legalcorp.com", "password": "SecurePassword123!"},
@@ -187,10 +207,11 @@ def test_register_and_login_flow(auth_client):
         headers=admin_headers,
     )
     assert create_user_resp.status_code == 201
+    counsel_id = create_user_resp.json()["id"]
     assert create_user_resp.json()["role"] == "legal_reviewer"
     assert create_user_resp.json()["tenant_id"] == "tenant_legalcorp"
 
-    # 7. Non-admin cannot create users via /api/auth/users (HTTP 403)
+    # 8. Non-admin cannot create users via /api/auth/users (HTTP 403)
     worker_login = client.post(
         "/api/auth/login",
         json={"email": "worker@acme.com", "password": "WorkerPassword123!"},
@@ -207,7 +228,34 @@ def test_register_and_login_flow(auth_client):
     )
     assert forbidden_resp.status_code == 403
 
-    # 8. Authenticated /me endpoint
+    # 9. Admin updates user status via PATCH /api/auth/users/{user_id}
+    deact_resp = client.patch(
+        f"/api/auth/users/{counsel_id}",
+        json={"is_active": False},
+        headers=admin_headers,
+    )
+    assert deact_resp.status_code == 200
+    assert deact_resp.json()["is_active"] is False
+
+    # Deactivated user cannot login (HTTP 403)
+    deact_login = client.post(
+        "/api/auth/login",
+        json={"email": "counsel@legalcorp.com", "password": "CounselPassword123!"},
+    )
+    assert deact_login.status_code == 403
+    assert "deactivated" in deact_login.json()["detail"].lower()
+
+    # 10. Admin cannot deactivate the last active administrator of the tenant (HTTP 400)
+    admin_id = admin_data["id"]
+    deact_admin_resp = client.patch(
+        f"/api/auth/users/{admin_id}",
+        json={"is_active": False},
+        headers=admin_headers,
+    )
+    assert deact_admin_resp.status_code == 400
+    assert "last active administrator" in deact_admin_resp.json()["detail"].lower()
+
+    # 11. Authenticated /me endpoint
     me_resp = client.get("/api/auth/me", headers=admin_headers)
     assert me_resp.status_code == 200
     me_data = me_resp.json()
@@ -215,7 +263,12 @@ def test_register_and_login_flow(auth_client):
     assert me_data["role"] == "admin"
     assert me_data["tenant_id"] == "tenant_legalcorp"
 
-    # 9. Unauthenticated /me endpoint rejected
+    # 12. Logout endpoint
+    logout_resp = client.post("/api/auth/logout")
+    assert logout_resp.status_code == 200
+    assert logout_resp.json()["status"] == "ok"
+
+    # 13. Unauthenticated /me endpoint rejected
     client.cookies.clear()
     unauth_resp = client.get("/api/auth/me")
     assert unauth_resp.status_code == 401

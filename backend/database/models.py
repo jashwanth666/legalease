@@ -41,6 +41,14 @@ class User(Base):
     )
 
 
+class SystemSetting(Base):
+    __tablename__ = "system_settings"
+
+    key = Column(String(64), primary_key=True, index=True)
+    value = Column(String(255), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
 class Document(Base):
     __tablename__ = "documents"
 

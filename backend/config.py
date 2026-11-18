@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     jwt_secret_key: str = "legalease-production-jwt-secret-key-change-in-env-32bytes"
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 1440
+    admin_bootstrap_secret: str = ""
 
     def validate_production_security(self) -> None:
         """Validate production security posture, failing startup if insecure."""
@@ -58,6 +59,10 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "CRITICAL SECURITY CONFIGURATION ERROR: Running in production environment with an unconfigured "
                     "or default JWT_SECRET_KEY. Please configure a cryptographically strong secret of at least 32 bytes."
+                )
+            if self.admin_bootstrap_secret and self.admin_bootstrap_secret.lower() in {"admin", "secret", "changeme", "bootstrap", "12345678"}:
+                raise ValueError(
+                    "CRITICAL SECURITY CONFIGURATION ERROR: Running in production with an insecure or trivial ADMIN_BOOTSTRAP_SECRET."
                 )
 
     @property

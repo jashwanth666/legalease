@@ -10,6 +10,7 @@ LegalEase helps startups, entrepreneurs, and small businesses screen contracts b
 
 - **Frontend:** Streamlit (8-page SaaS UI with custom navy/white/blue CSS)
 - **Backend:** Python, FastAPI, Uvicorn
+- **Authentication & Security:** Argon2id password hashing, RFC 7519 HS256 JWT, HttpOnly secure cookies, role-based access control (`admin`, `legal_reviewer`, `employee`), and tenant-isolated workspaces
 - **Generative AI:** Google Gemini API (`google-genai`, `langchain-google-genai`) with Pydantic structured outputs and explicit deterministic fallback when `GEMINI_API_KEY` is omitted
 - **Agentic Orchestration:** LangGraph (`StateGraph` with parallel fan-out for Risk Assessment, RAG Comparison, and Missing Clause Detection, followed by Evidence Verification)
 - **RAG & Embeddings:** FAISS + Sentence Transformers (`all-MiniLM-L6-v2` with offline deterministic fallback) + LangChain `BaseRetriever`
@@ -28,46 +29,104 @@ LegalEase helps startups, entrepreneurs, and small businesses screen contracts b
 - `data/reference_templates/` — Illustrative templates (`nda/`, `service_agreement/`, `employment/`, `partnership/`)
 - `storage/` — Uploaded binaries, extracted page JSON, SQLite database, and FAISS vector store
 - `outputs/reports/` — Generated ReportLab PDF analysis reports
-- `tests/` — Automated Pytest suite (`test_upload.py`, `test_extraction.py`, `test_risk.py`, `test_api.py`)
+- `tests/` — Automated Pytest suite (`test_upload.py`, `test_extraction.py`, `test_risk.py`, `test_api.py`, `test_auth.py`, `test_tenant_isolation.py`, `test_background_jobs.py`, `test_verification_hardening.py`, `test_admin_bootstrap.py`)
 
 ---
 
-## Quick Start
+## Quick Start & Setup
 
-1. **Install dependencies:**
-   ```bash
-   pip install -r backend/requirements.txt
-   ```
+### 1. Install dependencies
+```bash
+pip install -r backend/requirements.txt
+```
 
-2. **Configure environment variables:**
-   Copy `.env.example` to `.env` and optionally add your Gemini API key:
-   ```env
-   GEMINI_API_KEY=your_gemini_api_key_here
-   GEMINI_MODEL=gemini-2.5-flash
-   ```
-   *(If `GEMINI_API_KEY` is left empty, LegalEase runs in deterministic screening fallback mode and explicitly marks fallback outputs—never labeling fallback results as Gemini analysis.)*
+### 2. Configure environment variables
+Copy `.env.example` to `.env`:
+```bash
+cp .env.example .env
+```
 
-3. **Run the application:**
-   ```bash
-   python run.py
-   ```
-   - FastAPI API Docs: `http://127.0.0.1:8000/docs`
-   - Streamlit SaaS UI: `http://localhost:8501`
+Generate secure secrets for JWT and Administrator Bootstrap:
+```bash
+python -c "import secrets; print('JWT_SECRET_KEY=' + secrets.token_hex(32))"
+python -c "import secrets; print('ADMIN_BOOTSTRAP_SECRET=' + secrets.token_hex(32))"
+```
+
+Configure `.env`:
+```env
+GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_MODEL=gemini-2.5-flash
+JWT_SECRET_KEY=your_generated_jwt_secret_here
+ADMIN_BOOTSTRAP_SECRET=your_generated_bootstrap_secret_here
+ENVIRONMENT=development
+```
+*(If `GEMINI_API_KEY` is omitted, LegalEase runs in deterministic screening fallback mode and explicitly marks fallback outputs—never labeling fallback results as Gemini analysis.)*
+
+### 3. Initialize the System Administrator
+Before users can create accounts, initialize the primary system administrator:
+- **Via Streamlit SaaS UI:** Navigate to `http://localhost:8501`. If no administrator has been initialized, the "🚀 System Admin Setup" tab will appear. Enter your administrator email, password, and the server's `ADMIN_BOOTSTRAP_SECRET`.
+- **Via REST API:**
+  ```bash
+  curl -X POST http://127.0.0.1:8000/api/auth/bootstrap-admin \
+    -H "Content-Type: application/json" \
+    -d '{
+      "email": "admin@enterprise.com",
+      "password": "SecurePassword123!",
+      "full_name": "Primary Administrator",
+      "bootstrap_secret": "your_generated_bootstrap_secret_here",
+      "tenant_id": "tenant_enterprise"
+    }'
+  ```
+Once initialized, the bootstrap endpoint and UI are permanently disabled and return HTTP 409 Conflict for any subsequent attempts.
+
+### 4. Run the application
+```bash
+python run.py
+```
+- FastAPI Swagger Docs: `http://127.0.0.1:8000/docs`
+- Streamlit SaaS UI: `http://localhost:8501`
+
+---
+
+## Roles & Permissions
+
+| Role | Permissions |
+|---|---|
+| **Admin** | Full system & organization access: upload, analyze, view, delete any document in tenant, rebuild reference templates, provision users, manage team active status. |
+| **Legal Reviewer** | Reviewer access: upload, view, analyze documents, view team member roster, view metadata and comparisons. Can only delete their own uploaded documents. |
+| **Employee** | Standard user access: upload and review their own contracts, view reports. Cannot delete others' contracts or manage users. |
+
+### Public Registration vs. Organization Provisioning
+- **Public Registration (`POST /api/auth/register`):** Creates strictly `employee` accounts in dedicated private workspaces. Self-registration into an existing organization is blocked (HTTP 403) to prevent unauthorized tenant infiltration.
+- **Admin Provisioning (`POST /api/auth/users`):** Authenticated administrators can provision team members (`employee`, `legal_reviewer`, `admin`) within their own organization.
 
 ---
 
 ## FastAPI Endpoints
 
+### Authentication & User Management
+- `GET /api/auth/bootstrap-status` — Public check whether system administrator setup is completed
+- `POST /api/auth/bootstrap-admin` — One-time administrator provisioning via `ADMIN_BOOTSTRAP_SECRET`
+- `POST /api/auth/register` — Public self-registration (strictly creates `employee` accounts)
+- `POST /api/auth/login` — Authenticate and receive RFC 7519 HS256 JWT access token and HttpOnly cookie
+- `POST /api/auth/logout` — Clear session cookies securely
+- `GET /api/auth/me` — Authenticated user profile and organization context
+- `POST /api/auth/users` — Admin provisions new team member in their tenant
+- `GET /api/auth/users` — Admin and Legal Reviewer list organization team members
+- `PATCH /api/auth/users/{user_id}` — Admin updates team member status with last-admin protection
+
+### Documents & Analysis
 - `GET /health` — Server and Gemini configuration status
-- `POST /api/upload` — Validate, store, and extract page-referenced text from PDF/DOCX
-- `GET /api/documents` — List uploaded contracts
+- `POST /api/upload` — Validate, store, and extract page-referenced text from PDF/DOCX (tenant-isolated)
+- `GET /api/documents` — List uploaded contracts for the authenticated tenant/user
 - `GET /api/documents/{document_id}` — Document metadata and extracted pages
-- `POST /api/analyze/{document_id}` — Run full LangGraph analysis pipeline (user-triggered, non-blocking HTTP 202)
+- `POST /api/analyze/{document_id}` — Run full LangGraph analysis pipeline (atomic CAS background task, non-blocking HTTP 202)
 - `GET /api/status/{document_id}` — Real-time pipeline processing status and percent completion
 - `GET /api/analysis/{document_id}` — Retrieve risk overview, findings, summary, metadata, and missing clauses
 - `GET /api/metadata/{document_id}` — Retrieve 16 structured contract metadata fields with verified evidence citations
 - `GET /api/clauses/{document_id}` — Retrieve segmented and classified clauses
 - `GET /api/compare/{document_id}` — Side-by-side RAG comparisons against illustrative templates
+- `POST /api/templates/rebuild` — Rebuild FAISS reference template vector store (Admin privilege required)
 - `GET /api/reports` & `GET /api/report/{document_id}` — List and download PDF reports
 - `DELETE /api/documents/{document_id}` — Delete document, extracted text, DB rows, and PDF report
 
@@ -75,7 +134,8 @@ LegalEase helps startups, entrepreneurs, and small businesses screen contracts b
 
 ## Running Tests
 
+Execute the comprehensive automated test suite (including authentication, tenant isolation, atomic background jobs, evidence verification, and document workflows):
+
 ```bash
 python -m pytest tests/ -v
 ```
-

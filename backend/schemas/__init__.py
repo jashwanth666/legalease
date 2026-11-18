@@ -1,5 +1,8 @@
 from backend.schemas.auth import (
+    AdminBootstrapRequest,
     AdminCreateUserRequest,
+    AdminUpdateUserRequest,
+    BootstrapStatusResponse,
     TokenResponse,
     UserLoginRequest,
     UserRegisterRequest,
@@ -38,6 +41,10 @@ from backend.schemas.risk import (
 
 __all__ = [
     "ALL_CLAUSE_CATEGORIES",
+    "AdminBootstrapRequest",
+    "AdminCreateUserRequest",
+    "AdminUpdateUserRequest",
+    "BootstrapStatusResponse",
     "CLAUSE_CATEGORIES",
     "ClauseClassification",
     "ContractMetadata",

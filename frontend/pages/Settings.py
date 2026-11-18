@@ -262,6 +262,29 @@ with tab_sec:
                         for u in users_list
                     ]
                     st.dataframe(user_rows, use_container_width=True, hide_index=True)
+
+                    manageable = [u for u in users_list if u["id"] != current_user.get("id")]
+                    if manageable:
+                        st.markdown("###### Manage Team Member Account Status")
+                        col_u, col_act, col_btn = st.columns([2, 1, 1])
+                        with col_u:
+                            selected_user_label = st.selectbox(
+                                "Select Team Member",
+                                options=[f"{u['email']} ({u['role']})" for u in manageable],
+                                key="sb_manage_user",
+                            )
+                        with col_act:
+                            new_status = st.selectbox("Account Status", ["Active", "Deactivate"], key="sb_user_status")
+                        with col_btn:
+                            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+                            if st.button("Update Status", key="btn_update_user_status") and selected_user_label:
+                                target = next(u for u in manageable if f"{u['email']} ({u['role']})" == selected_user_label)
+                                try:
+                                    client.update_tenant_user(target["id"], is_active=(new_status == "Active"))
+                                    st.success(f"Updated account status for {target['email']}!")
+                                    st.rerun()
+                                except APIError as exc:
+                                    st.error(exc.message)
                 except APIError as exc:
                     st.caption(f"Could not load users: {exc.message}")
 

@@ -172,9 +172,29 @@ def test_cross_tenant_document_isolation(isolation_env):
     status_b = client.get(f"/api/status/{doc_id_a}", headers={"Authorization": f"Bearer {tokens['admin_b']}"})
     assert status_b.status_code == 404
 
-    # 7. Tenant B tries to delete doc_id_a -> 404 Not Found
+    # 7. Tenant B tries to query analysis, clauses, metadata, compare, and report download -> 404 Not Found
+    for subpath in ("analysis", "clauses", "metadata", "compare", "report"):
+        cross_resp = client.get(f"/api/{subpath}/{doc_id_a}", headers={"Authorization": f"Bearer {tokens['admin_b']}"})
+        assert cross_resp.status_code == 404, f"/api/{subpath}/{doc_id_a} returned {cross_resp.status_code}, expected 404"
+
+    # 8. Tenant B tries to delete doc_id_a -> 404 Not Found
     del_b = client.delete(f"/api/documents/{doc_id_a}", headers={"Authorization": f"Bearer {tokens['admin_b']}"})
     assert del_b.status_code == 404
+
+    # 9. Tenant B cannot see Tenant A's users via /api/auth/users
+    users_b_resp = client.get("/api/auth/users", headers={"Authorization": f"Bearer {tokens['admin_b']}"})
+    assert users_b_resp.status_code == 200
+    b_emails = {u["email"] for u in users_b_resp.json()}
+    assert "admin_b@tenant-b.com" in b_emails
+    assert "admin_a@tenant-a.com" not in b_emails
+    assert "emp_a@tenant-a.com" not in b_emails
+
+    # 10. Fabricated document ID checks for both tenants -> 404 Not Found
+    for fake_id in ("DOC-FABRICATED999", "DOC-NONEXISTENT"):
+        assert client.get(f"/api/documents/{fake_id}", headers={"Authorization": f"Bearer {tokens['admin_a']}"}).status_code == 404
+        assert client.get(f"/api/documents/{fake_id}", headers={"Authorization": f"Bearer {tokens['admin_b']}"}).status_code == 404
+        assert client.get(f"/api/analysis/{fake_id}", headers={"Authorization": f"Bearer {tokens['admin_a']}"}).status_code == 404
+        assert client.delete(f"/api/documents/{fake_id}", headers={"Authorization": f"Bearer {tokens['admin_a']}"}).status_code == 404
 
     # Document still exists for Tenant A
     get_a = client.get(f"/api/documents/{doc_id_a}", headers={"Authorization": f"Bearer {tokens['admin_a']}"})

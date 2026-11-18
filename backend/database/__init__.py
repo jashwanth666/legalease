@@ -6,6 +6,7 @@ from backend.database.models import (
     Comparison,
     Document,
     RiskAssessment,
+    SystemSetting,
     User,
 )
 
@@ -17,6 +18,7 @@ __all__ = [
     "Document",
     "RiskAssessment",
     "SessionLocal",
+    "SystemSetting",
     "User",
     "configure_database",
     "get_db",

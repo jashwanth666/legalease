@@ -68,6 +68,45 @@ class LegalEaseAPIClient:
 
         return response
 
+    def get_bootstrap_status(self) -> dict[str, Any]:
+        return self._request("GET", "/api/auth/bootstrap-status").json()
+
+    def bootstrap_admin(
+        self,
+        email: str,
+        password: str,
+        full_name: str,
+        bootstrap_secret: str,
+        tenant_id: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "email": email,
+            "password": password,
+            "full_name": full_name,
+            "bootstrap_secret": bootstrap_secret,
+        }
+        if tenant_id and tenant_id.strip():
+            payload["tenant_id"] = tenant_id.strip()
+        return self._request("POST", "/api/auth/bootstrap-admin", json=payload).json()
+
+    def logout(self) -> dict[str, Any]:
+        res = self._request("POST", "/api/auth/logout").json()
+        self.set_token(None)
+        return res
+
+    def update_tenant_user(
+        self,
+        user_id: int,
+        is_active: bool | None = None,
+        role: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if is_active is not None:
+            payload["is_active"] = is_active
+        if role is not None:
+            payload["role"] = role
+        return self._request("PATCH", f"/api/auth/users/{user_id}", json=payload).json()
+
     def register(
         self,
         email: str,

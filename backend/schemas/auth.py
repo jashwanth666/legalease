@@ -52,6 +52,38 @@ class UserRegisterRequest(BaseModel):
         return v
 
 
+class AdminBootstrapRequest(BaseModel):
+    """Payload for one-time system administrator initialization."""
+
+    email: str = Field(..., description="Corporate email for the initial system administrator.")
+    password: str = Field(..., min_length=8, description="Secure administrator password.")
+    full_name: str | None = Field(default=None, max_length=255)
+    bootstrap_secret: str = Field(..., min_length=1, description="One-time administrator bootstrap secret.")
+    tenant_id: str | None = Field(default="tenant_admin", max_length=64, description="Initial administrator workspace/tenant.")
+
+    @field_validator("email")
+    @classmethod
+    def validate_email_format(cls, v: str) -> str:
+        clean = v.strip().lower()
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", clean):
+            raise ValueError("Invalid email format.")
+        return clean
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_strength(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters long.")
+        return v
+
+
+class BootstrapStatusResponse(BaseModel):
+    """Public bootstrap status indicating whether initial admin setup has been completed."""
+
+    bootstrapped: bool
+    message: str
+
+
 class AdminCreateUserRequest(BaseModel):
     """Admin-only payload for provisioning users within their own tenant organization."""
 
@@ -112,3 +144,10 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     expires_in: int
     user: UserResponse
+
+
+class AdminUpdateUserRequest(BaseModel):
+    """Admin-only payload to update a user's active status or role within their tenant."""
+
+    is_active: bool | None = Field(default=None, description="Set account active or deactivated.")
+    role: UserRole | None = Field(default=None, description="Update role (admin, legal_reviewer, employee).")
