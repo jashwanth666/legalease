@@ -102,6 +102,7 @@ def render_auth_view(client: LegalEaseAPIClient) -> None:
         st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
         st.info(
             "ℹ️ **Public Workspace Registration:** New accounts are provisioned with standard **Employee** permissions. "
+            "A private, isolated workspace is automatically assigned to your account. "
             "To join an existing corporate organization, request an invitation from your tenant administrator."
         )
         reg_name = st.text_input("Full Name", key="reg_name_input", placeholder="Jashwanth R")
@@ -111,14 +112,6 @@ def render_auth_view(client: LegalEaseAPIClient) -> None:
             type="password",
             key="reg_pw_input",
             placeholder="••••••••",
-        )
-
-        reg_tenant = st.text_input(
-            "New Organization / Workspace Name (Optional)",
-            value="",
-            key="reg_tenant_input",
-            placeholder="e.g. acme-legal",
-            help="Enter a unique workspace ID for your new organization. If left blank, a dedicated private workspace is assigned.",
         )
 
         if st.button("Create Account & Workspace", type="primary", use_container_width=True, key="reg_submit_btn"):
@@ -132,7 +125,6 @@ def render_auth_view(client: LegalEaseAPIClient) -> None:
                         email=reg_email.strip(),
                         password=reg_password,
                         full_name=reg_name.strip(),
-                        tenant_id=reg_tenant.strip() or None,
                     )
                     # Auto-login after registration
                     res = client.login(reg_email.strip(), reg_password)

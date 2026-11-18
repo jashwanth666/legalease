@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 1440
     admin_bootstrap_secret: str = ""
+    redis_url: str = ""
+    allowed_origins: str = "http://localhost:8501,http://127.0.0.1:8501"
 
     def validate_production_security(self) -> None:
         """Validate production security posture, failing startup if insecure."""
@@ -60,10 +62,19 @@ class Settings(BaseSettings):
                     "CRITICAL SECURITY CONFIGURATION ERROR: Running in production environment with an unconfigured "
                     "or default JWT_SECRET_KEY. Please configure a cryptographically strong secret of at least 32 bytes."
                 )
-            if self.admin_bootstrap_secret and self.admin_bootstrap_secret.lower() in {"admin", "secret", "changeme", "bootstrap", "12345678"}:
+            if not self.admin_bootstrap_secret or len(self.admin_bootstrap_secret) < 16:
+                raise ValueError(
+                    "CRITICAL SECURITY CONFIGURATION ERROR: Running in production without a configured "
+                    "ADMIN_BOOTSTRAP_SECRET of at least 16 characters. Set ADMIN_BOOTSTRAP_SECRET in your environment."
+                )
+            if self.admin_bootstrap_secret.lower() in {"admin", "secret", "changeme", "bootstrap", "12345678"}:
                 raise ValueError(
                     "CRITICAL SECURITY CONFIGURATION ERROR: Running in production with an insecure or trivial ADMIN_BOOTSTRAP_SECRET."
                 )
+
+    def get_allowed_origins(self) -> list[str]:
+        """Return the list of CORS-allowed origins from the comma-separated config value."""
+        return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]
 
     @property
     def max_upload_size_bytes(self) -> int:

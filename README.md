@@ -10,7 +10,7 @@ LegalEase helps startups, entrepreneurs, and small businesses screen contracts b
 
 - **Frontend:** Streamlit (8-page SaaS UI with custom navy/white/blue CSS)
 - **Backend:** Python, FastAPI, Uvicorn
-- **Authentication & Security:** Argon2id password hashing, RFC 7519 HS256 JWT, HttpOnly secure cookies, role-based access control (`admin`, `legal_reviewer`, `employee`), and tenant-isolated workspaces
+- **Authentication & Security:** Argon2id password hashing, RFC 7519 HS256 JWT, HttpOnly secure cookies, CSRF-hardened headers/cookies, role-based access control (`admin`, `legal_reviewer`, `employee`), pluggable distributed sliding-window rate limiting (Redis-backed with thread-safe in-memory dev fallback), and tenant-isolated workspaces
 - **Generative AI:** Google Gemini API (`google-genai`, `langchain-google-genai`) with Pydantic structured outputs and explicit deterministic fallback when `GEMINI_API_KEY` is omitted
 - **Agentic Orchestration:** LangGraph (`StateGraph` with parallel fan-out for Risk Assessment, RAG Comparison, and Missing Clause Detection, followed by Evidence Verification)
 - **RAG & Embeddings:** FAISS + Sentence Transformers (`all-MiniLM-L6-v2` with offline deterministic fallback) + LangChain `BaseRetriever`
@@ -97,8 +97,13 @@ python run.py
 | **Employee** | Standard user access: upload and review their own contracts, view reports. Cannot delete others' contracts or manage users. |
 
 ### Public Registration vs. Organization Provisioning
-- **Public Registration (`POST /api/auth/register`):** Creates strictly `employee` accounts in dedicated private workspaces. Self-registration into an existing organization is blocked (HTTP 403) to prevent unauthorized tenant infiltration.
-- **Admin Provisioning (`POST /api/auth/users`):** Authenticated administrators can provision team members (`employee`, `legal_reviewer`, `admin`) within their own organization.
+- **Public Registration (`POST /api/auth/register`):** Creates strictly `employee` accounts in dedicated, server-assigned isolated workspaces. Client-supplied `tenant_id` parameters are intentionally not accepted or trusted; the server auto-assigns a unique tenant identifier to prevent tenant enumeration or unauthorized joining of existing organizations.
+- **Admin Provisioning (`POST /api/auth/users`):** Authenticated administrators can provision team members (`employee`, `legal_reviewer`, `admin`) directly within their own organization.
+
+### Distributed Rate Limiting
+Authentication endpoints (`/api/auth/login`, `/api/auth/register`, `/api/auth/bootstrap-admin`) are protected by a sliding-window rate limiter:
+- **Development Fallback:** When `REDIS_URL` is omitted, an in-memory thread-safe sliding-window counter is used automatically.
+- **Production / Multi-Instance:** Configure `REDIS_URL=redis://localhost:6379/0` in `.env` to enable centralized Redis `INCR` + `EXPIRE` rate limiting across multiple backend instances.
 
 ---
 

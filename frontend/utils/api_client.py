@@ -121,6 +121,8 @@ class LegalEaseAPIClient:
             "full_name": full_name,
             "role": "employee",
         }
+        # Note: tenant_id is forwarded but the server always auto-generates an isolated workspace.
+        # This parameter is kept for API compatibility only.
         if tenant_id and tenant_id.strip():
             payload["tenant_id"] = tenant_id.strip()
         return self._request("POST", "/api/auth/register", json=payload).json()

@@ -3,7 +3,6 @@
 from datetime import datetime, timedelta, timezone
 import hmac
 import logging
-import time
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.exc import IntegrityError
@@ -23,34 +22,38 @@ from backend.schemas.auth import (
     UserRegisterRequest,
     UserResponse,
 )
+from backend.services.rate_limiter import RateLimitExceeded, get_rate_limiter
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
-# Simple in-memory sliding window rate limiter: IP -> list of timestamps
-# Note: For multi-instance horizontal deployments, configure a centralized rate-limiter (e.g., Redis).
-_auth_rate_limits: dict[str, list[float]] = {}
-MAX_AUTH_ATTEMPTS = 60
-AUTH_WINDOW_SECONDS = 60.0
+# Rate limiter instance — initialized lazily on first request so that the
+# settings (including REDIS_URL) are available.  For tests, call
+# ``reset_auth_rate_limits()`` to clear all windows between test cases.
+_rate_limiter = None
+
+
+def _get_limiter():
+    global _rate_limiter  # noqa: PLW0603
+    if _rate_limiter is None:
+        _rate_limiter = get_rate_limiter(get_settings(), max_attempts=60, window_seconds=60.0)
+    return _rate_limiter
 
 
 def reset_auth_rate_limits() -> None:
-    """Reset rate limiter state (used in testing and administratively)."""
-    _auth_rate_limits.clear()
+    """Reset rate limiter state (for testing and administrative use)."""
+    _get_limiter().reset()
 
 
-def _check_rate_limit(client_ip: str) -> None:
-    now = time.time()
-    attempts = _auth_rate_limits.setdefault(client_ip, [])
-    # Filter attempts within the sliding window
-    _auth_rate_limits[client_ip] = [t for t in attempts if now - t < AUTH_WINDOW_SECONDS]
-    if len(_auth_rate_limits[client_ip]) >= MAX_AUTH_ATTEMPTS:
+def _check_rate_limit(action: str, client_ip: str) -> None:
+    try:
+        _get_limiter().check(action, client_ip)
+    except RateLimitExceeded as exc:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many authentication attempts. Please wait 60 seconds before retrying.",
-        )
-    _auth_rate_limits[client_ip].append(now)
+            detail=str(exc),
+        ) from exc
 
 
 @router.get("/bootstrap-status", response_model=BootstrapStatusResponse)
@@ -76,7 +79,7 @@ def bootstrap_system_admin(
     Rejects repeat initialization attempts permanently.
     """
     client_ip = request.client.host if request.client else "unknown"
-    _check_rate_limit(client_ip)
+    _check_rate_limit("bootstrap", client_ip)
 
     configured_secret = (settings.admin_bootstrap_secret or "").strip()
     if not configured_secret:
@@ -155,7 +158,7 @@ def register_user(
     Self-registration into an existing tenant is strictly forbidden to prevent unauthorized infiltration.
     """
     client_ip = request.client.host if request.client else "unknown"
-    _check_rate_limit(client_ip)
+    _check_rate_limit("bootstrap", client_ip)
 
     existing = db.query(User).filter(User.email == payload.email).first()
     if existing:
@@ -164,35 +167,10 @@ def register_user(
             detail=f"An account with email '{payload.email}' already exists.",
         )
 
-    # Public registration is strictly employee
+    # Public registration is strictly employee — always auto-generate a unique tenant.
+    # The client-supplied tenant_id is intentionally ignored: server controls all assignment.
     assigned_role = "employee"
-    tenant_candidate = (payload.tenant_id or "").strip()
-
-    if tenant_candidate:
-        # Check if this tenant already exists in users or documents
-        tenant_has_users = db.query(User).filter(User.tenant_id == tenant_candidate).first() is not None
-        tenant_has_docs = db.query(Document).filter(Document.tenant_id == tenant_candidate).first() is not None
-        if tenant_has_users or tenant_has_docs:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    f"Tenant organization '{tenant_candidate}' already exists. Self-registration into an existing "
-                    "organization is prohibited. Please contact your organization administrator for an invitation."
-                ),
-            )
-        tenant = tenant_candidate
-    else:
-        # Generate an isolated workspace tenant
-        domain = payload.email.split("@")[-1].split(".")[0]
-        clean_domain = f"tenant_{domain}" if domain and domain not in ("gmail", "yahoo", "hotmail", "outlook") else None
-        if (
-            clean_domain
-            and not db.query(User).filter(User.tenant_id == clean_domain).first()
-            and not db.query(Document).filter(Document.tenant_id == clean_domain).first()
-        ):
-            tenant = clean_domain
-        else:
-            tenant = f"tenant_{uuid.uuid4().hex[:8]}"
+    tenant = f"tenant_{uuid.uuid4().hex[:8]}"
 
     hashed_pw = hash_password(payload.password)
     user = User(
@@ -220,7 +198,7 @@ def login_user(
 ):
     """Authenticate email and password, issuing an RFC 7519 HS256 JWT access token."""
     client_ip = request.client.host if request.client else "unknown"
-    _check_rate_limit(client_ip)
+    _check_rate_limit("bootstrap", client_ip)
 
     user = db.query(User).filter(User.email == payload.email).first()
     if not user or not verify_password(payload.password, user.hashed_password):

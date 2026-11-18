@@ -10,7 +10,12 @@ UserRole = Literal["admin", "legal_reviewer", "employee"]
 
 
 class UserRegisterRequest(BaseModel):
-    """Registration payload for creating a new tenant-scoped user account."""
+    """Registration payload for creating a new tenant-scoped user account.
+
+    The ``tenant_id`` is intentionally absent: the server always auto-generates
+    an isolated workspace UUID for every public registration.  This prevents
+    tenant-ID enumeration or unauthorized joining of existing organizations.
+    """
 
     email: str = Field(..., description="Valid corporate or user email address.")
     password: str = Field(..., min_length=8, description="Secure password (minimum 8 characters).")
@@ -18,11 +23,6 @@ class UserRegisterRequest(BaseModel):
     role: str = Field(
         default="employee",
         description="Public registration is restricted to 'employee'. Privileged roles require admin invitation.",
-    )
-    tenant_id: str | None = Field(
-        default=None,
-        max_length=64,
-        description="Optional organization/tenant ID for a new workspace.",
     )
 
     @field_validator("role")
@@ -40,7 +40,7 @@ class UserRegisterRequest(BaseModel):
     @classmethod
     def validate_email_format(cls, v: str) -> str:
         clean = v.strip().lower()
-        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", clean):
+        if not re.match(r"^[^\@\s]+@[^\@\s]+\.[^\@\s]+$", clean):
             raise ValueError("Invalid email format.")
         return clean
 

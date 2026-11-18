@@ -148,17 +148,19 @@ def test_register_and_login_flow(auth_client):
     assert dup_boot.status_code == 409
     assert "already been initialized" in dup_boot.json()["detail"]
 
-    # 4. Public registration strictly creates role 'employee' in an isolated workspace
+    # 4. Public registration strictly creates role 'employee' with server-assigned isolated workspace.
+    # The server always auto-generates a unique tenant — client-supplied tenant_id is ignored.
     emp_payload = {
         "email": "worker@acme.com",
         "password": "WorkerPassword123!",
         "full_name": "Bob Worker",
-        "tenant_id": "tenant_acme",
     }
     emp_resp = client.post("/api/auth/register", json=emp_payload)
     assert emp_resp.status_code == 201
     assert emp_resp.json()["role"] == "employee"
-    assert emp_resp.json()["tenant_id"] == "tenant_acme"
+    # Server-assigned tenant must be non-empty and differ from the admin's tenant
+    assert emp_resp.json()["tenant_id"]
+    assert emp_resp.json()["tenant_id"] != "tenant_legalcorp"
 
     # Duplicate email in public registration rejected (HTTP 409)
     dup_emp = client.post("/api/auth/register", json=emp_payload)
@@ -176,16 +178,19 @@ def test_register_and_login_flow(auth_client):
     assert priv_resp.status_code == 422
     assert "Public self-registration only permits creating Employee accounts" in priv_resp.text
 
-    # 6. Attempting to self-register into an EXISTING tenant organization is rejected (HTTP 403)
-    infiltrate_payload = {
-        "email": "intruder@evil.com",
-        "password": "IntruderPassword123!",
-        "full_name": "Tenant Infiltrator",
-        "tenant_id": "tenant_legalcorp",  # already exists!
-    }
-    infiltrate_resp = client.post("/api/auth/register", json=infiltrate_payload)
-    assert infiltrate_resp.status_code == 403
-    assert "already exists" in infiltrate_resp.json()["detail"]
+    # 6. Public registration auto-generates unique tenants — two independent registrations
+    # from the same email domain must receive different isolated workspaces.
+    user_a_resp = client.post(
+        "/api/auth/register",
+        json={"email": "usera@unique-org.com", "password": "Password123!", "full_name": "User A"},
+    )
+    user_b_resp = client.post(
+        "/api/auth/register",
+        json={"email": "userb@unique-org.com", "password": "Password123!", "full_name": "User B"},
+    )
+    assert user_a_resp.status_code == 201
+    assert user_b_resp.status_code == 201
+    assert user_a_resp.json()["tenant_id"] != user_b_resp.json()["tenant_id"]
 
     # 7. Admin creates a legal_reviewer within their tenant via POST /api/auth/users
     admin_login = client.post(
@@ -279,6 +284,7 @@ def test_production_jwt_secret_validation():
     prod_settings_bad = Settings(
         environment="production",
         jwt_secret_key="insecure-default-secret-key-change-in-production",
+        admin_bootstrap_secret="atleast16chars!!!!",
     )
     with pytest.raises(ValueError, match="CRITICAL SECURITY CONFIGURATION ERROR"):
         prod_settings_bad.validate_production_security()
@@ -286,6 +292,37 @@ def test_production_jwt_secret_validation():
     prod_settings_good = Settings(
         environment="production",
         jwt_secret_key="a-very-long-and-secure-randomly-generated-secret-key-32bytes",
+        admin_bootstrap_secret="atleast16chars!!!!",
     )
     # Good settings must not raise
     prod_settings_good.validate_production_security()
+
+
+def test_production_bootstrap_secret_validation():
+    """Verify that in production, missing or short bootstrap secret raises ValueError."""
+    # Missing bootstrap secret
+    no_bootstrap = Settings(
+        environment="production",
+        jwt_secret_key="a-very-long-and-secure-randomly-generated-secret-key-32bytes",
+        admin_bootstrap_secret="",
+    )
+    with pytest.raises(ValueError, match="ADMIN_BOOTSTRAP_SECRET"):
+        no_bootstrap.validate_production_security()
+
+    # Too short
+    short_secret = Settings(
+        environment="production",
+        jwt_secret_key="a-very-long-and-secure-randomly-generated-secret-key-32bytes",
+        admin_bootstrap_secret="tooshort",
+    )
+    with pytest.raises(ValueError, match="ADMIN_BOOTSTRAP_SECRET"):
+        short_secret.validate_production_security()
+
+    # Trivial / blacklisted value
+    trivial_secret = Settings(
+        environment="production",
+        jwt_secret_key="a-very-long-and-secure-randomly-generated-secret-key-32bytes",
+        admin_bootstrap_secret="secret",
+    )
+    with pytest.raises(ValueError, match="ADMIN_BOOTSTRAP_SECRET"):
+        trivial_secret.validate_production_security()
