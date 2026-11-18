@@ -82,8 +82,6 @@ def test_api_client_login_and_register_flow():
             email="user@firm.com",
             password="securepassword123",
             full_name="Test User",
-            role="legal_reviewer",
-            tenant_id="test_tenant",
         )
         assert reg["email"] == "user@firm.com"
 

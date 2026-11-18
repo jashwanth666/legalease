@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     jwt_access_token_expire_minutes: int = 1440
     admin_bootstrap_secret: str = ""
     redis_url: str = ""
+    require_redis_in_production: bool = False
     allowed_origins: str = "http://localhost:8501,http://127.0.0.1:8501"
 
     def validate_production_security(self) -> None:
@@ -71,6 +72,32 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "CRITICAL SECURITY CONFIGURATION ERROR: Running in production with an insecure or trivial ADMIN_BOOTSTRAP_SECRET."
                 )
+            # CORS validation: wildcard origins forbidden in production
+            origins = self.get_allowed_origins()
+            if "*" in origins:
+                raise ValueError(
+                    "CRITICAL SECURITY CONFIGURATION ERROR: Wildcard origin '*' is forbidden in production when credentials are enabled."
+                )
+            # Distributed rate limiting in production
+            if self.require_redis_in_production and not self.redis_url:
+                raise ValueError(
+                    "CRITICAL SECURITY CONFIGURATION ERROR: require_redis_in_production is enabled, but REDIS_URL is not configured."
+                )
+            if self.redis_url:
+                try:
+                    import redis as redis_lib
+
+                    client = redis_lib.from_url(
+                        self.redis_url,
+                        socket_connect_timeout=2,
+                        socket_timeout=2,
+                    )
+                    client.ping()
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"CRITICAL SECURITY CONFIGURATION ERROR: Running in production with REDIS_URL configured, "
+                        f"but Redis connection test failed: {exc}. Multi-instance production requires a reachable Redis service."
+                    ) from exc
 
     def get_allowed_origins(self) -> list[str]:
         """Return the list of CORS-allowed origins from the comma-separated config value."""

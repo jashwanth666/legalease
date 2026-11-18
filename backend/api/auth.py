@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta, timezone
 import hmac
 import logging
+import secrets
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.exc import IntegrityError
@@ -28,9 +29,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
-# Rate limiter instance — initialized lazily on first request so that the
-# settings (including REDIS_URL) are available.  For tests, call
-# ``reset_auth_rate_limits()`` to clear all windows between test cases.
+# Rate limiter instance — initialized lazily on first request so that settings are loaded.
 _rate_limiter = None
 
 
@@ -41,19 +40,50 @@ def _get_limiter():
     return _rate_limiter
 
 
+def get_active_rate_limiter_backend() -> str:
+    """Return the active rate limiter backend name ('redis' or 'inmemory')."""
+    return _get_limiter().backend_type
+
+
 def reset_auth_rate_limits() -> None:
     """Reset rate limiter state (for testing and administrative use)."""
     _get_limiter().reset()
 
 
-def _check_rate_limit(action: str, client_ip: str) -> None:
+def _check_rate_limit(
+    action: str,
+    client_ip: str,
+    max_attempts: int | None = None,
+    window_seconds: float | None = None,
+) -> None:
     try:
-        _get_limiter().check(action, client_ip)
+        _get_limiter().check(
+            action=action,
+            client_ip=client_ip,
+            max_attempts=max_attempts,
+            window_seconds=window_seconds,
+        )
     except RateLimitExceeded as exc:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=str(exc),
         ) from exc
+
+
+@router.get("/csrf-token")
+def issue_csrf_token(response: Response, settings: Settings = Depends(get_settings)):
+    """Issue a fresh CSRF token for cookie-authenticated web sessions."""
+    csrf_token = secrets.token_hex(32)
+    is_secure = settings.cookie_secure or settings.environment.lower() == "production"
+    response.set_cookie(
+        key="csrf_token",
+        value=csrf_token,
+        httponly=False,  # Accessible by frontend scripts to attach to X-CSRF-Token header
+        secure=is_secure,
+        max_age=settings.jwt_access_token_expire_minutes * 60,
+        samesite="lax",
+    )
+    return {"csrf_token": csrf_token}
 
 
 @router.get("/bootstrap-status", response_model=BootstrapStatusResponse)
@@ -79,7 +109,7 @@ def bootstrap_system_admin(
     Rejects repeat initialization attempts permanently.
     """
     client_ip = request.client.host if request.client else "unknown"
-    _check_rate_limit("bootstrap", client_ip)
+    _check_rate_limit("bootstrap", client_ip, max_attempts=10, window_seconds=60.0)
 
     configured_secret = (settings.admin_bootstrap_secret or "").strip()
     if not configured_secret:
@@ -158,7 +188,7 @@ def register_user(
     Self-registration into an existing tenant is strictly forbidden to prevent unauthorized infiltration.
     """
     client_ip = request.client.host if request.client else "unknown"
-    _check_rate_limit("bootstrap", client_ip)
+    _check_rate_limit("register", client_ip, max_attempts=20, window_seconds=60.0)
 
     existing = db.query(User).filter(User.email == payload.email).first()
     if existing:
@@ -167,10 +197,16 @@ def register_user(
             detail=f"An account with email '{payload.email}' already exists.",
         )
 
-    # Public registration is strictly employee — always auto-generate a unique tenant.
+    # Public registration is strictly employee — always auto-generate a unique 128-bit UUID tenant.
     # The client-supplied tenant_id is intentionally ignored: server controls all assignment.
     assigned_role = "employee"
-    tenant = f"tenant_{uuid.uuid4().hex[:8]}"
+    while True:
+        candidate_tenant = f"tenant_{uuid.uuid4().hex}"
+        has_users = db.query(User).filter(User.tenant_id == candidate_tenant).first() is not None
+        has_docs = db.query(Document).filter(Document.tenant_id == candidate_tenant).first() is not None
+        if not has_users and not has_docs:
+            tenant = candidate_tenant
+            break
 
     hashed_pw = hash_password(payload.password)
     user = User(
@@ -198,7 +234,7 @@ def login_user(
 ):
     """Authenticate email and password, issuing an RFC 7519 HS256 JWT access token."""
     client_ip = request.client.host if request.client else "unknown"
-    _check_rate_limit("bootstrap", client_ip)
+    _check_rate_limit("login", client_ip, max_attempts=30, window_seconds=60.0)
 
     user = db.query(User).filter(User.email == payload.email).first()
     if not user or not verify_password(payload.password, user.hashed_password):
@@ -245,6 +281,17 @@ def login_user(
         samesite="lax",
     )
 
+    # Set CSRF protection token cookie (readable by frontend to pass in X-CSRF-Token header)
+    csrf_token = secrets.token_hex(32)
+    response.set_cookie(
+        key="csrf_token",
+        value=csrf_token,
+        httponly=False,
+        secure=is_secure,
+        max_age=settings.jwt_access_token_expire_minutes * 60,
+        samesite="lax",
+    )
+
     return TokenResponse(
         access_token=access_token,
         token_type="bearer",
@@ -255,10 +302,14 @@ def login_user(
 
 @router.post("/logout")
 def logout_user(response: Response):
-    """Clear session authentication cookie securely."""
+    """Clear session authentication and CSRF cookies securely."""
     response.delete_cookie(
         key="access_token",
         httponly=True,
+        samesite="lax",
+    )
+    response.delete_cookie(
+        key="csrf_token",
         samesite="lax",
     )
     return {"status": "ok", "message": "Successfully logged out."}

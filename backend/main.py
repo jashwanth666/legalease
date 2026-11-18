@@ -13,6 +13,7 @@ from backend.api import (
     reports_router,
     upload_router,
 )
+from backend.api.auth import get_active_rate_limiter_backend
 from backend.config import LEGAL_DISCLAIMER, get_settings
 from backend.database import Document, init_db
 from backend.database import db as db_module
@@ -68,8 +69,8 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=settings.get_allowed_origins(),
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "Accept", "X-CSRF-Token", "X-Requested-With"],
     )
 
     @app.get("/health", response_model=HealthResponse, tags=["System"])
@@ -80,6 +81,7 @@ def create_app() -> FastAPI:
             app=current.app_name,
             version=current.app_version,
             gemini_configured=current.has_gemini_key,
+            rate_limiter_backend=get_active_rate_limiter_backend(),
             disclaimer=LEGAL_DISCLAIMER,
         )
 

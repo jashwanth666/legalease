@@ -10,6 +10,7 @@ class HealthResponse(BaseModel):
     app: str
     version: str
     gemini_configured: bool
+    rate_limiter_backend: str = "inmemory"
     disclaimer: str
 
 

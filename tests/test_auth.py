@@ -326,3 +326,149 @@ def test_production_bootstrap_secret_validation():
     )
     with pytest.raises(ValueError, match="ADMIN_BOOTSTRAP_SECRET"):
         trivial_secret.validate_production_security()
+
+
+def test_production_cors_wildcard_rejection():
+    """Verify that wildcard origins ('*') in production with credentials fail startup validation."""
+    prod_wildcard = Settings(
+        environment="production",
+        jwt_secret_key="a-very-long-and-secure-randomly-generated-secret-key-32bytes",
+        admin_bootstrap_secret="atleast16chars!!!!",
+        allowed_origins="http://localhost:8501,*",
+    )
+    with pytest.raises(ValueError, match=r"Wildcard origin '\*' is forbidden in production"):
+        prod_wildcard.validate_production_security()
+
+
+def test_tenant_id_entropy_and_uniqueness(auth_client):
+    """Verify that auto-assigned tenant IDs use full 128-bit UUID entropy and never collide."""
+    client, _ = auth_client
+    reset_auth_rate_limits()
+
+    generated_tenants = set()
+    for i in range(5):
+        resp = client.post(
+            "/api/auth/register",
+            json={
+                "email": f"tenant_test_{i}@enterprise.com",
+                "password": "SecurePassword123!",
+                "full_name": f"User {i}",
+            },
+        )
+        assert resp.status_code == 201
+        tenant_id = resp.json()["tenant_id"]
+        # Full UUID hex is 32 characters, so prefix "tenant_" + 32 chars = 39 chars
+        assert tenant_id.startswith("tenant_")
+        assert len(tenant_id) == 39  # 7 + 32
+        assert tenant_id not in generated_tenants
+        generated_tenants.add(tenant_id)
+
+    assert len(generated_tenants) == 5
+
+
+def test_cookie_auth_requires_csrf_for_state_changing_methods(auth_client):
+    """State-changing requests using cookie authentication must provide a valid CSRF token."""
+    client, _ = auth_client
+    reset_auth_rate_limits()
+
+    # 1. Login to get access_token and csrf_token cookies
+    login_resp = client.post(
+        "/api/auth/login",
+        json={"email": "bootstrap_admin@legalcorp.com", "password": "SecurePassword123!"},
+    )
+    if login_resp.status_code != 200:
+        # If admin not initialized yet, initialize first
+        client.post(
+            "/api/auth/bootstrap-admin",
+            json={
+                "email": "bootstrap_admin@legalcorp.com",
+                "password": "SecurePassword123!",
+                "full_name": "Admin",
+                "bootstrap_secret": "test-bootstrap-secret-1234567890",
+            },
+        )
+        login_resp = client.post(
+            "/api/auth/login",
+            json={"email": "bootstrap_admin@legalcorp.com", "password": "SecurePassword123!"},
+        )
+    assert login_resp.status_code == 200
+
+    # Ensure access_token cookie is present in client
+    assert "access_token" in client.cookies
+    assert "csrf_token" in client.cookies
+    valid_csrf_token = client.cookies["csrf_token"]
+
+    # 2. State-changing POST using ONLY cookie auth (NO Authorization header) and NO X-CSRF-Token header -> 403 Forbidden
+    resp_no_csrf = client.post(
+        "/api/auth/users",
+        json={"email": "test_csrf@legalcorp.com", "password": "Password123!", "role": "employee"},
+    )
+    assert resp_no_csrf.status_code == 403
+    assert "CSRF validation failed" in resp_no_csrf.json()["detail"]
+
+    # 3. State-changing POST with mismatched/invalid X-CSRF-Token header -> 403 Forbidden
+    resp_bad_csrf = client.post(
+        "/api/auth/users",
+        json={"email": "test_csrf@legalcorp.com", "password": "Password123!", "role": "employee"},
+        headers={"X-CSRF-Token": "invalid-wrong-token-value"},
+    )
+    assert resp_bad_csrf.status_code == 403
+    assert "token mismatch" in resp_bad_csrf.json()["detail"]
+
+    # 4. State-changing POST with matching X-CSRF-Token header -> 201 Created
+    resp_valid_csrf = client.post(
+        "/api/auth/users",
+        json={"email": "test_csrf@legalcorp.com", "password": "Password123!", "role": "employee"},
+        headers={"X-CSRF-Token": valid_csrf_token},
+    )
+    assert resp_valid_csrf.status_code == 201
+    assert resp_valid_csrf.json()["email"] == "test_csrf@legalcorp.com"
+
+
+def test_bearer_auth_bypasses_csrf_protection(auth_client):
+    """Requests authenticated via Authorization: Bearer <token> must NOT be blocked by CSRF checks."""
+    client, _ = auth_client
+    reset_auth_rate_limits()
+
+    login_resp = client.post(
+        "/api/auth/login",
+        json={"email": "bootstrap_admin@legalcorp.com", "password": "SecurePassword123!"},
+    )
+    if login_resp.status_code != 200:
+        client.post(
+            "/api/auth/bootstrap-admin",
+            json={
+                "email": "bootstrap_admin@legalcorp.com",
+                "password": "SecurePassword123!",
+                "full_name": "Admin",
+                "bootstrap_secret": "test-bootstrap-secret-1234567890",
+            },
+        )
+        login_resp = client.post(
+            "/api/auth/login",
+            json={"email": "bootstrap_admin@legalcorp.com", "password": "SecurePassword123!"},
+        )
+    assert login_resp.status_code == 200
+    token = login_resp.json()["access_token"]
+
+    # Clear cookies so only Bearer header is sent
+    client.cookies.clear()
+
+    # Mutating request with Bearer token and NO CSRF token must succeed
+    resp = client.post(
+        "/api/auth/users",
+        json={"email": "test_bearer_user@legalcorp.com", "password": "Password123!", "role": "employee"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["email"] == "test_bearer_user@legalcorp.com"
+
+
+def test_health_reports_active_rate_limiter_backend(auth_client):
+    """The /health endpoint must report the active rate limiter backend ('inmemory' or 'redis')."""
+    client, _ = auth_client
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "rate_limiter_backend" in data
+    assert data["rate_limiter_backend"] in ("inmemory", "redis")
